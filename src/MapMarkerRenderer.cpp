@@ -504,8 +504,8 @@ void MapMarkerRenderer::Draw() {
 
     auto& camData  = camera->GetRuntimeData();
     auto& camData2 = camera->GetRuntimeData2();
-    const bool useFlatMapPlane = MapDraw::UsesFlatMapProjection(camData.worldToCam);
     RE::TESWorldSpace* currentMapWorld = mapMenu->GetRuntimeData2()->worldSpace;
+    const bool useFlatMapPlane = MapDraw::UsesFlatMapProjection(camData.worldToCam, currentMapWorld);
 
     if (Settings::GetSingleton()->mapPinProjectionLog) {
         const auto& t = camData.worldToCam[3];

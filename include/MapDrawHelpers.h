@@ -1125,7 +1125,17 @@ namespace MapDraw {
 
     inline constexpr float kMapPlaneZ = 180000.0f;
 
-    inline bool UsesFlatMapProjection(const float (&a_worldToCam)[4][4]) noexcept {
+    inline bool UsesFlatMapProjection(const float (&a_worldToCam)[4][4],
+                                      const RE::TESWorldSpace* a_mapWorld) noexcept {
+        if (a_mapWorld) {
+            const float pitch = a_mapWorld->worldMapData.cameraData.initialPitch;
+            const float offsetZ = a_mapWorld->worldMapOffsetData.mapOffsetZ;
+            if (std::isfinite(pitch) && std::isfinite(offsetZ) &&
+                std::fabs(pitch - 90.0f) <= 1.0f && offsetZ > 100000.0f) {
+                return true;
+            }
+        }
+
         const float lookX = a_worldToCam[3][0];
         const float lookY = a_worldToCam[3][1];
         const float lookZ = a_worldToCam[3][2];

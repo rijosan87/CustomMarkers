@@ -839,7 +839,8 @@ void HoverImageRenderer::Draw() {
     {
         auto& camData  = niCam->GetRuntimeData();
         auto& camData2 = niCam->GetRuntimeData2();
-        const bool useFlatMapPlane = MapDraw::UsesFlatMapProjection(camData.worldToCam);
+        const bool useFlatMapPlane = MapDraw::UsesFlatMapProjection(
+            camData.worldToCam, mapMenuPtr->GetRuntimeData2()->worldSpace);
         RE::NiPoint3 mapPos = MapDraw::MapProjectionPoint(s.position, useFlatMapPlane);
         float sx = 0.0f, sy = 0.0f, sz = 0.0f;
         if (!RE::NiCamera::WorldPtToScreenPt3(
