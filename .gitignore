@@ -1,0 +1,40 @@
+# Visual Studio
+.vs/
+out/
+build/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.cmake
+
+# Build Artifacts
+dist/
+*.pdb
+*.iobj
+*.ipdb
+*.ilk
+*.exp
+*.lib
+*.obj
+*.dll
+
+# Temporary
+tmp/
+reference/
+
+# Crash-log symbol archive (never shipped)
+pdb-archive/
+
+# External Dependencies
+CommonLibSSE-NG/
+extern/
+
+# Python Cache
+__pycache__/
+*.pyc
