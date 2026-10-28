@@ -1,9 +1,8 @@
-// Handles mouse clicks on local and interior map surfaces.
-
 #include "LocalMapClickHook.h"
 #include "MarkerManager.h"
 #include "MapMarkerRenderer.h"
 #include "LocalMapRenderer.h"
+#include "Settings.h"
 
 #include <RE/Skyrim.h>
 #include <SKSE/SKSE.h>
@@ -15,8 +14,6 @@
 #include <Windows.h>
 #include <cmath>
 #include <memory>
-
-// STATUS (update when behavior changes; do NOT update CLAUDE.md for this):
 
 namespace {
     std::uint64_t                              g_trampolineAddr = 0;
@@ -37,36 +34,78 @@ namespace {
     }
 
     bool TryPlaceAtCursor() {
+        const bool verbose = Settings::GetSingleton()->inputVerboseLog;
+        if (verbose) {
+            logger::info("[InputVerbose] local_place begin runtime={}",
+                         REL::Module::get().version().string("."));
+        }
+
         auto* ui = RE::UI::GetSingleton();
-        if (!ui) return false;
+        if (!ui) {
+            if (verbose) logger::info("[InputVerbose] local_place failed reason=no_ui");
+            return false;
+        }
         auto mapMenu = ui->GetMenu<RE::MapMenu>();
-        if (!mapMenu) return false;
+        if (!mapMenu) {
+            if (verbose) logger::info("[InputVerbose] local_place failed reason=no_map_menu");
+            return false;
+        }
+
         const auto base         = reinterpret_cast<std::uintptr_t>(mapMenu.get());
         const auto localMapBase = base + 0x60;
         auto* cam = *reinterpret_cast<RE::NiCamera**>(localMapBase + 0x302F8);
-        if (!cam) return false;
-        auto* menuCursor = RE::MenuCursor::GetSingleton();
-        if (!menuCursor || menuCursor->screenWidthX <= 0.f || menuCursor->screenWidthY <= 0.f) {
+        if (!cam) {
+            if (verbose) logger::info("[InputVerbose] local_place failed reason=no_camera");
             return false;
         }
+
+        // Cursor must come from the same source LocalMapRenderer projects against.
+        auto* menuCursor = RE::MenuCursor::GetSingleton();
+        if (!menuCursor || menuCursor->screenWidthX <= 0.f || menuCursor->screenWidthY <= 0.f) {
+            if (verbose) logger::info("[InputVerbose] local_place failed reason=invalid_cursor");
+            return false;
+        }
+
         float vpL = *reinterpret_cast<const float*>(localMapBase + 0x30);
         float vpT = *reinterpret_cast<const float*>(localMapBase + 0x34);
         float vpR = *reinterpret_cast<const float*>(localMapBase + 0x38);
         float vpB = *reinterpret_cast<const float*>(localMapBase + 0x3c);
+
         float vpWidth = vpR - vpL;
         float vpHeight = vpB - vpT;
-        if (vpWidth <= 0.f || vpHeight <= 0.f) return false;
+        if (vpWidth <= 0.f || vpHeight <= 0.f) {
+            if (verbose) {
+                logger::info("[InputVerbose] local_place failed reason=invalid_viewport width={} height={}",
+                             vpWidth, vpHeight);
+            }
+            return false;
+        }
+
         float localX = menuCursor->cursorPosX - vpL;
         float localY = menuCursor->cursorPosY - vpT;
-        REL::Relocation<ScreenToWorldRay_t> screenToWorldRay{ REL::RelocationID(70630, 70630) };
+
+        // CommonLib's NiCamera::WindowPointToRay mapping. Do not reuse the AE
+        // ID on SE; 70630 resolves to a different SE function.
+        REL::Relocation<ScreenToWorldRay_t> screenToWorldRay{ REL::RelocationID(69263, 70630) };
+
         RE::NiPoint3 rayA{}, rayDir{};
         bool rayOk = screenToWorldRay(cam,
                                       static_cast<int>(localX),
                                       static_cast<int>(localY),
                                       &rayA, &rayDir,
                                       vpWidth, vpHeight);
+        if (verbose) {
+            logger::info(
+                "[InputVerbose] local_place ray ok={} cursor=({:.1f},{:.1f}) local=({:.1f},{:.1f}) viewport=({:.1f},{:.1f}) origin=({:.1f},{:.1f},{:.1f}) dir=({:.4f},{:.4f},{:.4f})",
+                rayOk, menuCursor->cursorPosX, menuCursor->cursorPosY, localX, localY,
+                vpWidth, vpHeight, rayA.x, rayA.y, rayA.z, rayDir.x, rayDir.y, rayDir.z);
+        }
         if (!rayOk) return false;
+
         RE::NiPoint3 rayB = rayA + rayDir * 10000.f;
+
+        // Intersect the player's ground plane, not the camera plane (see the
+        // long note on the original left-click path for why rayA.z is wrong).
         RE::FormID   cellID       = 0;
         RE::FormID   worldSpaceID = 0;
         float        groundZ      = rayA.z;
@@ -83,9 +122,22 @@ namespace {
             }
             groundZ = player->GetPositionZ();
         }
-        if (!haveCell) return false;
+
+        if (!haveCell) {
+            if (verbose) logger::info("[InputVerbose] local_place failed reason=no_player_cell");
+            return false;
+        }
+
         RE::NiPoint3 hitPos{};
-        if (!RayAtZ(rayA, rayB, groundZ, hitPos)) return false;
+        if (!RayAtZ(rayA, rayB, groundZ, hitPos)) {
+            if (verbose) logger::info("[InputVerbose] local_place failed reason=ray_parallel groundZ={}", groundZ);
+            return false;
+        }
+
+        if (verbose) {
+            logger::info("[InputVerbose] local_place dialog pos=({:.1f},{:.1f},{:.1f}) world={:08X} cell={:08X}",
+                         hitPos.x, hitPos.y, hitPos.z, worldSpaceID, cellID);
+        }
         MapMarkerRenderer::GetSingleton()->OpenNoteDialog(hitPos, worldSpaceID, cellID);
         return true;
     }
@@ -95,39 +147,54 @@ namespace {
         auto callOriginal = [&]() -> bool {
             return REL::Relocation<func_t>(g_trampolineAddr)(a_handler, a_event);
         };
+
         if (!a_handler || !a_event) return callOriginal();
+
+        // Only act on left-mouse press. idCode 0 = left button on kMouse device.
         const bool isLeftMouseDown =
             a_event->GetDevice() == RE::INPUT_DEVICE::kMouse &&
             a_event->GetIDCode() == 0 &&
             a_event->IsDown();
+
         if (!isLeftMouseDown) return callOriginal();
+
         struct NeutralizeOnExit {
             RE::ButtonEvent* ev;
             ~NeutralizeOnExit() {
                 if (ev) ev->userEvent = RE::BSFixedString("");
             }
         } _neutralize{ a_event };
+
         if (MapMarkerRenderer::GetSingleton()->IsNoteDialogOpen()) {
             return true;
         }
+
         if (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse) {
             return true;
         }
+
+        // Reach the LocalMapMenu's NiCamera via the live MapMenu in the UI.
         auto* ui = RE::UI::GetSingleton();
         if (!ui) return callOriginal();
         auto mapMenu = ui->GetMenu<RE::MapMenu>();
         if (!mapMenu) return callOriginal();
+
         const auto base         = reinterpret_cast<std::uintptr_t>(mapMenu.get());
         const auto localMapBase = base + 0x60;
         auto* cam = *reinterpret_cast<RE::NiCamera**>(localMapBase + 0x302F8);
         if (!cam) return callOriginal();
+
         if (auto removeId = LocalMapRenderer::GetSingleton()->GetRemoveButtonTarget();
             removeId != 0) {
             MarkerManager::GetSingleton()->RemoveMarker(removeId);
             return true;
         }
+
+        // Set/Clear destination button click. Same routing pattern as remove.
         if (auto destId = LocalMapRenderer::GetSingleton()->GetDestButtonTarget();
             destId != 0) {
+            // Real markers only: the synthesized vanilla destination has no
+            // hover panel and must never be toggled through this path.
             auto markers = MarkerManager::GetSingleton()->GetUserMarkers();
             bool isCurrentlyDest = false;
             for (const auto& m : markers) {
@@ -136,23 +203,30 @@ namespace {
             MarkerManager::GetSingleton()->SetDestination(destId, !isCurrentlyDest);
             return true;
         }
+
+        // "Edit Note" button on the local-map hover panel.
         if (auto editId = LocalMapRenderer::GetSingleton()->GetEditButtonTarget();
             editId != 0) {
             MapMarkerRenderer::GetSingleton()->BeginEditMarker(editId);
             return true;
         }
+
         if (LocalMapRenderer::GetSingleton()->IsCustomPinHovered()) {
             return true;
         }
+
         if (LocalMapRenderer::GetSingleton()->IsBeaconHovered()) {
             return true;
         }
+
         const bool ctrlHeld = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
         const auto hoveredMarkerIndex =
             *reinterpret_cast<const std::int32_t*>(localMapBase + 0x303F8);
         if (hoveredMarkerIndex != -1 && !ctrlHeld) {
             return callOriginal();
         }
+
+        // Always call original so vanilla camera repositioning still works.
         return callOriginal();
     }
 }

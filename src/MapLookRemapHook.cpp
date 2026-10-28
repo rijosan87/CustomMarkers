@@ -1,6 +1,5 @@
-// Remaps map camera rotation/tilt to middle-mouse drag.
-
 #include "MapLookRemapHook.h"
+#include "ImGui/Renderer.h"
 
 #include <RE/Skyrim.h>
 #include <SKSE/SKSE.h>
@@ -9,12 +8,15 @@
 
 #include <memory>
 
-// STATUS (update when behavior changes; do NOT update CLAUDE.md for this):
+// Remaps map camera rotation/tilt to middle-mouse drag.
 
 namespace {
+    // mouse idCodes in the Skyrim input queue
     constexpr std::uint32_t kRightMouse  = 1;
     constexpr std::uint32_t kMiddleMouse = 2;
 
+    // Set true while middle-mouse tilt (look mode) is active. The per-frame
+    // PinCursorIfTilting() reads this to freeze the cursor at the press point.
     std::atomic<bool>  g_tilting{ false };
     std::atomic<float> g_pinX{ 0.0f };
     std::atomic<float> g_pinY{ 0.0f };
@@ -38,6 +40,7 @@ namespace {
         return true;
     }
 
+    // The userEvent string vanilla compares against to identify the look button.
     const RE::BSFixedString kMapLookMode{ "MapLookMode" };
 
     template <class Fn, class Ev>
@@ -57,12 +60,15 @@ namespace {
         std::uint32_t idCode = 0;
         if (IsMouseButton(a_event, idCode)) {
             if (idCode == kRightMouse) {
+                // Right-mouse must never enter look mode. It belongs to our
+                // context menu now.
                 return false;
             }
             if (idCode == kMiddleMouse) {
                 return RunAsLook<CanProcessFn>(g_canProcessTramp, a_this, a_event);
             }
         }
+        // Mouse-move "Cursor" events, keyboard, gamepad: untouched.
         return reinterpret_cast<CanProcessFn>(g_canProcessTramp)(a_this, a_event);
     }
 
@@ -74,15 +80,17 @@ namespace {
             }
             if (idCode == kMiddleMouse) {
                 if (a_event->Value() == 0.0f) {
-                    a_this->unk18 = 0;
+                    a_this->unk18 = 0;  // release: leave look mode
                     g_tilting = false;
+                    ImGuiRenderer::LogInputEnvironment("map_tilt_release");
                 } else if (a_event->HeldDuration() == 0.0f) {
-                    a_this->unk18 = 1;
+                    a_this->unk18 = 1;  // press: enter look mode, no recenter
                     if (auto* cursor = RE::MenuCursor::GetSingleton()) {
                         g_pinX = cursor->cursorPosX;
                         g_pinY = cursor->cursorPosY;
                     }
                     g_tilting = true;
+                    ImGuiRenderer::LogInputEnvironment("map_tilt_press");
                 }
                 return true;
             }
@@ -113,7 +121,6 @@ bool MapLookRemapHook::IsTilting() {
 
 void MapLookRemapHook::PinCursorIfTilting() {
     if (!g_tilting) return;
-
     if (auto* cursor = RE::MenuCursor::GetSingleton()) {
         cursor->cursorPosX = g_pinX.load();
         cursor->cursorPosY = g_pinY.load();

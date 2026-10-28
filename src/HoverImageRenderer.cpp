@@ -1,17 +1,17 @@
-// Renders preview location artwork and screenshots in hover stat cards.
-
 #include "HoverImageRenderer.h"
 
 #include "TextureManager.h"
 #include "MarkerManager.h"
-#include "MapMarkerRenderer.h"
-#include "MarkerFilterHook.h"
+#include "MapMarkerRenderer.h"  // IsMapFading()
+#include "MarkerFilterHook.h"   // IsMarkerFiltered(), focus-mode gate
 #include "MapTheme.h"
-#include "MapDrawHelpers.h"
+#include "MapDrawHelpers.h"  // DrawTextShadowed
 #include "LocalizationManager.h"
 #include "Settings.h"
 #include "HoldBounty.h"
 #include "FontManager.h"
+#include "MenuUtils.h"
+#include "UIScale.h"
 
 #include <RE/Skyrim.h>
 #include <SKSE/SKSE.h>
@@ -21,21 +21,19 @@
 #define CMM_BOUNTY_DEBUG 0
 
 #include <d3d11.h>
-#include <cfloat>
+#include <cfloat>       // FLT_MAX (ImFont::CalcTextSizeA max_width)
 #include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <unordered_map>
 
-// STATUS (update when behavior changes; do NOT update CLAUDE.md for this):
-
 namespace {
     constexpr std::ptrdiff_t kHoveredMarkerOffset = 0x30558;
-
     inline std::ptrdiff_t MarkerArrayCountOffset() {
         return REL::Relocate<std::ptrdiff_t>(0x30480, 0x30478);
     }
-
+    // MapMenu+0x10 holds GFxMovieView*. Same pattern used by the
+    // description-card suppression code.
     constexpr std::ptrdiff_t kMovieViewOffset     = 0x10;
 
     constexpr std::uintptr_t kLocalMapBaseOffset = 0x60;
@@ -54,38 +52,41 @@ namespace {
     struct CardScreenRect {
         bool             valid        = false;
         bool             isDiscovered = true;
-        float            centerX      = 0.0f;
+        float            centerX      = 0.0f;  // screen px, card center
         float            centerY      = 0.0f;
-        float            widthPx      = 0.0f;
+        float            widthPx      = 0.0f;  // already scaled
         float            heightPx     = 0.0f;
-        float            alpha01      = 0.0f;
-        RE::FormID       formID       = 0;
-        std::string      name;
-        RE::FormID       worldSpaceID = 0;
-        RE::FormID       cellID       = 0;
-        RE::NiPoint3     position;
+        float            alpha01      = 0.0f;  // 0..1
+        RE::FormID       formID       = 0;     // hovered marker ref FormID, 0 if unknown
+        std::string      name;              // resolved location name, "<ID=...>" prefix stripped
+        RE::FormID       worldSpaceID = 0;  // parent worldspace
+        RE::FormID       cellID       = 0;  // parent cell (for interiors)
+        RE::NiPoint3     position;          // 3D coordinates
         bool             hasPosition  = false;
-        std::string      typeLabel;
+        std::string      typeLabel;         // translated marker-type word, "" if none
         std::uint16_t    markerType   = 0;
-        std::string      holdName;
+        std::string      holdName;          // Hold name (engine string), "" if none
         bool             isCleared    = false;
         std::uint32_t    bounty       = 0;
-        float            textAnchorX  = 0.0f;
-        float            titleWidthPx = 0.0f;
-        float            textAnchorY  = 0.0f;
-        bool             haveTitle    = false;
+        float            textAnchorX  = 0.0f;  // screen px, vanilla title center
+        float            titleWidthPx = 0.0f;  // screen px, vanilla title width (for left/right align)
+        float            textAnchorY  = 0.0f;  // screen px, vanilla title top (Y anchor, cleared-safe)
+        bool             haveTitle    = false; // title clip resolved; else fall back to box anchors
     };
 
     std::mutex     g_stateMutex;
     CardScreenRect g_state;
 
+    // State for the right-click context menu
     bool g_openContextMenu = false;
-    CardScreenRect g_contextMenuState;
+    CardScreenRect g_contextMenuState; // Cached state for the open menu
 
     struct LocalIdentity {
         RE::FormID   doorFormID = 0;
         RE::FormID   doorWorldSpaceID = 0;
         RE::FormID   doorCellID = 0;
+        // Where the door LEADS. Kept for later (an interior beacon once the
+        // player is inside), not used for the outside beacon.
         RE::FormID   destWorldSpaceID = 0;
         RE::FormID   destCellID = 0;
         std::string  name;
@@ -129,6 +130,8 @@ namespace {
         logger::debug("[Hover] stage -> {}", a_msg);
     }
 
+    // GFxValue helpers: read a numeric member as double. Returns false if the
+    // member is missing or not numeric.
     bool ReadMemberNum(const RE::GFxValue& a_obj, const char* a_name,
                        double& a_out) {
         RE::GFxValue v;
@@ -139,44 +142,46 @@ namespace {
     }
 
     struct MarkerEntry {
-        RE::TESFullName*  namePtr;
-        RE::RefHandle     handle;
-        std::uint32_t     pad0C;
-        RE::BSFixedString nameStr;
-        std::uint32_t     type;
-        std::uint32_t     pad1C;
-        std::int32_t      nextIndex;
-        std::uint32_t     pad24;
-        void*             questObj;
+        RE::TESFullName*  namePtr;    // +0x00  valid when type==0; polymorphic (often BGSLocation)
+        RE::RefHandle     handle;     // +0x08  valid for all types
+        std::uint32_t     pad0C;      // +0x0C
+        RE::BSFixedString nameStr;    // +0x10  fallback string when namePtr==0 and type==0
+        std::uint32_t     type;       // +0x18  0 = base MapMarker, 1 = stacked alias
+        std::uint32_t     pad1C;      // +0x1C
+        std::int32_t      nextIndex;  // +0x20  next stacked marker in array, or -1
+        std::uint32_t     pad24;      // +0x24
+        void*             questObj;   // +0x28  used when type==1 and nextIndex != -1
     };
-    static_assert(sizeof(MarkerEntry) == 0x30);
+    static_assert(sizeof(MarkerEntry) == 0x30);  // engine stride is 0x38; trailing 0x08 unused here
 
-    constexpr std::uintptr_t kLocalMarkerArrayOffset = 0x00;
-    constexpr std::uintptr_t kLocalMarkerCountOffset = 0x10;
+    constexpr std::uintptr_t kLocalMarkerArrayOffset = 0x00;   // from LocalMapMenu
+    constexpr std::uintptr_t kLocalMarkerCountOffset = 0x10;   // from LocalMapMenu
     constexpr std::uintptr_t kLocalHoveredIdxOffset  = 0x303F8;
 
     struct LocalMarkerEntry {
-        void*             namePtr;
-        RE::RefHandle     handle;
-        std::uint32_t     pad0C;
-        RE::BSFixedString nameStr;
-        std::int32_t      type;
-        std::int32_t      subType;
-        std::int32_t      nextIndex;
-        std::uint32_t     pad24;
-        RE::TESQuest*     quest;
-        std::uint8_t      isVisible;
-        std::uint8_t      pad31[7];
+        void*             namePtr;    // +0x00  name object; null for doors
+        RE::RefHandle     handle;     // +0x08  door/object reference handle
+        std::uint32_t     pad0C;      // +0x0C
+        RE::BSFixedString nameStr;    // +0x10  used when namePtr == nullptr
+        std::int32_t      type;       // +0x18  0 = base, 1 = stacked alias, 2 = player
+        std::int32_t      subType;    // +0x1C  1 = load door
+        std::int32_t      nextIndex;  // +0x20  next stacked entry, or -1
+        std::uint32_t     pad24;      // +0x24
+        RE::TESQuest*     quest;      // +0x28  quest target, if any
+        std::uint8_t      isVisible;  // +0x30
+        std::uint8_t      pad31[7];   // +0x31
     };
     static_assert(sizeof(LocalMarkerEntry) == 0x38);
 
     bool ResolveLocalIdentity(RE::MapMenu* a_menu, std::int32_t a_idx, LocalIdentity& a_out) {
         a_out = {};
         if (!a_menu || a_idx < 0) return false;
+
         const auto lmBase = reinterpret_cast<std::uintptr_t>(a_menu) + kLocalMapBaseOffset;
         auto* arr = *reinterpret_cast<LocalMarkerEntry* const*>(lmBase + kLocalMarkerArrayOffset);
         const auto count = *reinterpret_cast<const std::uint32_t*>(lmBase + kLocalMarkerCountOffset);
         if (!arr || static_cast<std::uint32_t>(a_idx) >= count) return false;
+
         const LocalMarkerEntry* target = &arr[a_idx];
         if (target->type == 1) {
             for (std::uint32_t i = 0; i < count; ++i) {
@@ -186,6 +191,8 @@ namespace {
                 }
             }
         }
+
+        // Name object is polymorphic: the C-string sits at +0x08 inside it.
         const char* raw = nullptr;
         if (target->namePtr) {
             raw = *reinterpret_cast<const char* const*>(
@@ -194,9 +201,12 @@ namespace {
             raw = target->nameStr.c_str();
         }
         if (raw && *raw) {
+            // Engine-internal "<ID=xxxxxxxx>" prefix, 13 chars, stripped by the
+            // vanilla card populator too.
             constexpr std::string_view kIdPrefix{ "<ID=" };
             a_out.name = std::string_view{ raw }.starts_with(kIdPrefix) ? (raw + 13) : raw;
         }
+
         if (target->handle) {
             RE::NiPointer<RE::TESObjectREFR> doorRef;
             if (RE::LookupReferenceByHandle(target->handle, doorRef) && doorRef) {
@@ -204,10 +214,12 @@ namespace {
                 a_out.doorPosition = doorRef->GetPosition();
                 if (auto* ws = doorRef->GetWorldspace()) a_out.doorWorldSpaceID = ws->GetFormID();
                 if (auto* cell = doorRef->GetParentCell()) a_out.doorCellID = cell->GetFormID();
+
                 if (auto* tele = doorRef->extraList.GetByType<RE::ExtraTeleport>();
                     tele && tele->teleportData) {
                     a_out.destPosition   = tele->teleportData->position;
                     a_out.hasDestination = true;
+
                     if (auto destRef = tele->teleportData->linkedDoor.get()) {
                         if (auto* ws = destRef->GetWorldspace()) a_out.destWorldSpaceID = ws->GetFormID();
                         if (auto* cell = destRef->GetParentCell()) a_out.destCellID = cell->GetFormID();
@@ -255,6 +267,7 @@ namespace {
             case 32: return "NordicDwelling";
             case 33: return "Docks";
             case 34: return "Shrine";
+            // 35-52: per-city capital/castle icon variants -> "City".
             case 35: case 36: case 37: case 38: case 39: case 40:
             case 41: case 42: case 43: case 44: case 45: case 46:
             case 47: case 48: case 49: case 50: case 51: case 52:
@@ -263,8 +276,8 @@ namespace {
             case 54: return "RavenRock";
             case 55: return "StandingStone";
             case 56: return "TelvanniTower";
-            case 59: return "City";
-            default: return nullptr;
+            case 59: return "City";  // Castle Karstaag
+            default: return nullptr; // None, travel doors, modded/unknown
         }
     }
 
@@ -274,8 +287,10 @@ namespace {
         if (!a_refr) return nullptr;
         auto* loc = a_refr->GetEditorLocation();
         if (!loc) return nullptr;
+
         auto* holdKw = RE::TESForm::LookupByID<RE::BGSKeyword>(kLocTypeHoldLocalID);
         if (!holdKw) return nullptr;
+
         int guard = 0;
         for (RE::BGSLocation* cur = loc; cur && guard < 16; cur = cur->parentLoc, ++guard) {
             if (cur->HasKeyword(holdKw)) return cur;
@@ -300,15 +315,18 @@ namespace {
         if (!mapWorld) {
             return false;
         }
+
+        // Depth cap: parentWorld is data-driven, and a broken mod record could
+        // in principle make it cyclic. 8 is far beyond any real hierarchy.
         constexpr int kMaxHops = 8;
         auto* ws = a_from;
         for (int hop = 0; ws && hop < kMaxHops; ++hop) {
             if (ws == mapWorld) {
-                return true;
+                return true;   // arrived; a_pos now in the map's frame
             }
             auto* parent = ws->parentWorld;
             if (!parent) {
-                return false;
+                return false;  // standalone world, nothing to convert into
             }
             a_pos.x += ws->worldMapOffsetData.mapOffsetX;
             a_pos.y += ws->worldMapOffsetData.mapOffsetY;
@@ -331,19 +349,23 @@ namespace {
         a_out.isCleared = false;
         a_out.bounty = 0;
         if (!a_menu || a_idx < 0) return;
+
         auto base   = reinterpret_cast<std::uintptr_t>(a_menu);
         auto arrPtr = *reinterpret_cast<std::uintptr_t*>(base + 0x30470);
         if (!arrPtr) return;
         const auto arrSize = *reinterpret_cast<std::uint32_t*>(base + MarkerArrayCountOffset());
         if (static_cast<std::uint32_t>(a_idx) >= arrSize) return;
+
         constexpr std::size_t kStride = 0x38;
         auto getEntry = [arrPtr](std::uint32_t i) -> const MarkerEntry& {
             return *reinterpret_cast<const MarkerEntry*>(
                 arrPtr + static_cast<std::uintptr_t>(i) * kStride);
         };
+
         const MarkerEntry* target = &getEntry(static_cast<std::uint32_t>(a_idx));
         const RE::RefHandle hoveredHandle = target->handle;
         const std::uint32_t hoveredType = target->type;
+
         if (g_identityCache.valid &&
             g_identityCache.arrPtr == arrPtr &&
             g_identityCache.arrSize == arrSize &&
@@ -364,6 +386,7 @@ namespace {
             a_out.bounty = g_identityCache.identity.bounty;
             return;
         }
+
         if (g_markerArrayCache.arrPtr != arrPtr ||
             g_markerArrayCache.arrSize != arrSize) {
             g_markerArrayCache.arrPtr = arrPtr;
@@ -378,12 +401,14 @@ namespace {
             }
             g_identityCache.valid = false;
         }
+
         if (target->type == 1) {
             if (auto it = g_markerArrayCache.baseIndexByHandle.find(target->handle);
                 it != g_markerArrayCache.baseIndexByHandle.end()) {
                 target = &getEntry(it->second);
             }
         }
+
         const char* rawName = nullptr;
         if (target->namePtr) {
             rawName = target->namePtr->fullName.c_str();
@@ -398,11 +423,14 @@ namespace {
                 a_out.name.assign(rawName);
             }
         }
+
+        // Fast path: namePtr is often a TESForm subclass (e.g. BGSLocation).
         if (target->namePtr) {
             if (auto* form = skyrim_cast<RE::TESForm*>(target->namePtr)) {
                 a_out.formID = form->GetFormID();
             }
         }
+        // Resolve through the handle to get FormID (if missing) and Position
         if (target->handle != 0) {
             RE::NiPointer<RE::TESObjectREFR> refr;
             if (RE::LookupReferenceByHandle(target->handle, refr) && refr) {
@@ -418,9 +446,11 @@ namespace {
                 if (auto* cell = refr->GetParentCell()) {
                     a_out.cellID = cell->GetFormID();
                 }
+
                 if (auto* extra = refr->extraList.GetByType<RE::ExtraMapMarker>()) {
                     if (extra->mapData) {
                         a_out.isDiscovered = (extra->mapData->flags.underlying() & 2) != 0;
+
                         const std::uint16_t mt = extra->mapData->type.underlying();
                         a_out.markerType = mt;
                         if (const char* key = MarkerTypeKey(mt)) {
@@ -429,6 +459,9 @@ namespace {
                         }
                     }
                 }
+
+                // One parentLoc walk yields the Hold; name and bounty both hang
+                // off it. Cleared reads the marker's OWN location, not the Hold.
                 if (auto* hold = ResolveHoldLocation(refr.get())) {
                     const char* nm = hold->GetFullName();
                     a_out.holdName = (nm && *nm) ? std::string{ nm } : std::string{};
@@ -448,6 +481,7 @@ namespace {
                 a_out.isCleared = ResolveCleared(refr.get());
             }
         }
+
         g_identityCache.arrPtr = arrPtr;
         g_identityCache.arrSize = arrSize;
         g_identityCache.idx = a_idx;
@@ -469,6 +503,8 @@ void HoverImageRenderer::SampleCardState(RE::MapMenu* a_menu) {
     auto base = reinterpret_cast<std::uintptr_t>(a_menu);
     auto idx  = *reinterpret_cast<std::int32_t*>(base + kHoveredMarkerOffset);
     if (idx < 0) {
+        // Hover ended: drop the identity cache so a recycled RefHandle inside
+        // the same array generation can never serve a stale identity.
         g_identityCache.valid = false;
         LogStage(Stage::NoHover, "NoHover (idx=-1)");
         clearState();
@@ -526,6 +562,7 @@ void HoverImageRenderer::SampleCardState(RE::MapMenu* a_menu) {
         vis.SetBoolean(false);
         holder.SetMember("_visible", vis);
     }
+    // ---- end takeover -----------------------------------------------------
 
     if (!hideVanillaCard && (widthS <= 0.0 || heightS <= 0.0 || alpha <= 0.0)) {
         LogStage(Stage::BadSize,
@@ -533,14 +570,13 @@ void HoverImageRenderer::SampleCardState(RE::MapMenu* a_menu) {
         clearState();
         return;
     }
-
     if (hideVanillaCard) {
         alpha = 100.0;
     }
 
-    double titleCenterStage = xStage;
-    double titleWidthStage  = 0.0;
-    double titleTopStage    = yStage;
+    double titleCenterStage = xStage;  // pin fallback (X)
+    double titleWidthStage  = 0.0;     // 0 => no title width known (align falls back to center)
+    double titleTopStage    = yStage;  // box fallback (Y)
     bool   haveTitle        = false;
     {
         double dX = 0.0, dY = 0.0, tX = 0.0, tY = 0.0, tW = 0.0;
@@ -583,7 +619,7 @@ void HoverImageRenderer::SampleCardState(RE::MapMenu* a_menu) {
     next.widthPx  = wPx;
     next.heightPx = hPx;
     next.alpha01  = static_cast<float>(std::clamp(alpha / 100.0, 0.0, 1.0));
-
+    // Title center + width + top -> screen, same viewport mapping as the rest.
     next.textAnchorX  = static_cast<float>(vp.left) +
                         static_cast<float>(titleCenterStage) * scale;
     next.titleWidthPx = static_cast<float>(titleWidthStage) * scale;
@@ -662,6 +698,7 @@ void HoverImageRenderer::Init() {
         if (!val.is_object()) continue;
         auto imgIt = val.find("image");
         if (imgIt == val.end() || !imgIt->is_string()) continue;
+
         const auto pipe = key.find('|');
         if (pipe == std::string::npos) {
             logger::warn("[Hover] Skipping key without '|' separator: '{}'", key);
@@ -673,6 +710,8 @@ void HoverImageRenderer::Init() {
             logger::warn("[Hover] Empty plugin or id half in key: '{}'", key);
             continue;
         }
+        // std::stoul handles "0x"/"0X" prefix when base=0; require it
+        // explicitly so a missing prefix doesn't silently parse as decimal.
         if (!(idText.starts_with("0x") || idText.starts_with("0X"))) {
             logger::warn("[Hover] Local ID missing '0x' prefix: '{}'", key);
             continue;
@@ -684,6 +723,7 @@ void HoverImageRenderer::Init() {
             logger::warn("[Hover] Bad hex in key: '{}'", key);
             continue;
         }
+
         const RE::FormID runtime = resolve(pluginName, localID);
         if (runtime == 0) {
             logger::debug("[Hover] Plugin '{}' not loaded; skipping '{}'",
@@ -701,10 +741,24 @@ void HoverImageRenderer::Init() {
 void HoverImageRenderer::Draw() {
     auto ui = RE::UI::GetSingleton();
     if (!ui || !ui->IsMenuOpen(RE::MapMenu::MENU_NAME)) {
+        g_openContextMenu = false;
+        g_openLocalContextMenu = false;
+        return;
+    }
+    if (MenuUtils::ShouldBlockMapOverlay()) {
+        g_openContextMenu = false;
+        g_openLocalContextMenu = false;
         return;
     }
 
     if (IsMapFading()) {
+        g_openContextMenu = false;
+        g_openLocalContextMenu = false;
+        return;
+    }
+    if (MenuUtils::IsMapModalOpen()) {
+        g_openContextMenu = false;
+        g_openLocalContextMenu = false;
         return;
     }
 
@@ -718,50 +772,89 @@ void HoverImageRenderer::Draw() {
     ImGui::PushStyleColor(ImGuiCol_Text,          MapTheme::kPopupText());
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, MapTheme::kPopupHoverBg());
     ImGui::PushStyleColor(ImGuiCol_HeaderActive,  MapTheme::kPopupHoverBg());
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,  ImVec2(10.0f, 8.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,    ImVec2(8.0f,  6.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.5f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,    ImVec2(UIScale::Px(10.0f), UIScale::Px(8.0f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,      ImVec2(UIScale::Px(8.0f),  UIScale::Px(6.0f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, UIScale::Px(1.5f));
     if (ImGui::BeginPopup("VanillaContextMenu")) {
-        ImGui::SetWindowFontScale(std::clamp(Settings::GetSingleton()->bodyScale, 0.5f, 3.0f));
+        const float effectiveBodyScale = std::clamp(Settings::GetSingleton()->bodyScale, 0.5f, 3.0f) * UIScale::Font();
+        ImGui::SetWindowFontScale(effectiveBodyScale);
         const auto& cs = g_contextMenuState;
+        auto* mapRenderer = MapMarkerRenderer::GetSingleton();
+        const int controllerAction = mapRenderer->TakeControllerContextAction(MapMarkerRenderer::ContextKind::Vanilla);
+        if (controllerAction == -2) ImGui::CloseCurrentPopup();
+        MapMarkerRenderer::ContextRowHit rows[3]{};
+        std::size_t rowCount = 0;
+        bool actionRan = false;
+
         ImGui::TextColored(MapTheme::kPopupHeaderText(), "%s", cs.name.c_str());
         ImGui::Separator();
+
         if (cs.hasPosition) {
             bool isDest = MarkerManager::GetSingleton()->IsVanillaDestination(cs.name);
-            if (ImGui::MenuItem(LocalizationManager::Get(isDest ? "Menu.RemoveDestination"
-                                                                 : "Menu.SetDestination").c_str())) {
+            const bool destClicked = ImGui::MenuItem(LocalizationManager::Get(isDest ? "Menu.RemoveDestination"
+                                                                             : "Menu.SetDestination").c_str());
+            const ImVec2 destMin = ImGui::GetItemRectMin();
+            const ImVec2 destMax = ImGui::GetItemRectMax();
+            rows[rowCount++] = { destMin.x, destMin.y, destMax.x, destMax.y, true };
+            if (destClicked || controllerAction == 0) {
                 logger::debug("[HoverCard] Toggle Vanilla Destination clicked for {}", cs.name);
                 if (isDest) {
                     MarkerManager::GetSingleton()->RemoveVanillaDestination();
                 } else {
                     MarkerManager::GetSingleton()->SetVanillaDestination(cs.name, cs.formID, cs.worldSpaceID, cs.cellID, cs.position);
                 }
+                actionRan = true;
+                if (controllerAction == 0) ImGui::CloseCurrentPopup();
             }
+
             bool isFav = MarkerManager::GetSingleton()->IsFavorite(cs.formID);
             if (!cs.isDiscovered) ImGui::BeginDisabled();
-            if (ImGui::MenuItem(LocalizationManager::Get(isFav ? "Menu.RemoveFavorite"
-                                                                : "Menu.AddToFavorites").c_str())) {
+            const bool favClicked = ImGui::MenuItem(LocalizationManager::Get(isFav ? "Menu.RemoveFavorite"
+                                                                           : "Menu.AddToFavorites").c_str());
+            const ImVec2 favMin = ImGui::GetItemRectMin();
+            const ImVec2 favMax = ImGui::GetItemRectMax();
+            rows[rowCount++] = { favMin.x, favMin.y, favMax.x, favMax.y, cs.isDiscovered };
+            if (cs.isDiscovered && (favClicked || controllerAction == 1)) {
                 logger::debug("[HoverCard] Toggle Favorite clicked for {}", cs.name);
                 MarkerManager::GetSingleton()->ToggleFavorite(cs.formID, cs.worldSpaceID, cs.cellID, cs.position, cs.name);
                 if (!isFav) {
                     MapMarkerRenderer::GetSingleton()->ShowListTab(
                         MapMarkerRenderer::ListTab::Favorites);
                 }
+                actionRan = true;
+                if (controllerAction == 1) ImGui::CloseCurrentPopup();
             }
             if (!cs.isDiscovered) ImGui::EndDisabled();
+
             if (cs.formID != 0) {
                 bool hasNote = !MarkerManager::GetSingleton()->GetVanillaNote(cs.formID).empty();
+                // GetLabel returns the key itself when the translation file
+                // doesn't have it yet, so fall back to the English string.
                 auto* loc = LocalizationManager::GetSingleton();
                 std::string noteLabel = loc->GetLabel(hasNote ? "VanillaMenu.EditNote" : "VanillaMenu.AddNote");
                 if (noteLabel == "VanillaMenu.EditNote") noteLabel = "Edit Note";
                 else if (noteLabel == "VanillaMenu.AddNote") noteLabel = "Add Note";
-                if (ImGui::MenuItem(noteLabel.c_str())) {
+                const bool noteClicked = ImGui::MenuItem(noteLabel.c_str());
+                const ImVec2 noteMin = ImGui::GetItemRectMin();
+                const ImVec2 noteMax = ImGui::GetItemRectMax();
+                rows[rowCount++] = { noteMin.x, noteMin.y, noteMax.x, noteMax.y, true };
+                if (noteClicked || controllerAction == 2) {
                     logger::debug("[HoverCard] Vanilla note clicked for {} ({:08X})", cs.name, cs.formID);
                     MapMarkerRenderer::GetSingleton()->BeginEditVanillaNote(cs.formID, cs.name);
+                    actionRan = true;
+                    if (controllerAction == 2) ImGui::CloseCurrentPopup();
                 }
             }
         } else {
             ImGui::TextDisabled("%s", LocalizationManager::Get("Menu.LocationDataUnavailable").c_str());
+        }
+
+        if (controllerAction != -2 && !actionRan) {
+            const ImVec2 pos = ImGui::GetWindowPos();
+            const ImVec2 size = ImGui::GetWindowSize();
+            mapRenderer->PublishControllerContextPopup(MapMarkerRenderer::ContextKind::Vanilla,
+                                                       pos.x, pos.y, pos.x + size.x, pos.y + size.y,
+                                                       rows, rowCount);
         }
         ImGui::EndPopup();
     }
@@ -772,24 +865,44 @@ void HoverImageRenderer::Draw() {
     }
 
     if (ImGui::BeginPopup("LocalDoorContextMenu")) {
-        ImGui::SetWindowFontScale(std::clamp(Settings::GetSingleton()->bodyScale, 0.5f, 3.0f));
+        const float effectiveBodyScale = std::clamp(Settings::GetSingleton()->bodyScale, 0.5f, 3.0f) * UIScale::Font();
+        ImGui::SetWindowFontScale(effectiveBodyScale);
+        auto* mapRenderer = MapMarkerRenderer::GetSingleton();
+        const int controllerAction = mapRenderer->TakeControllerContextAction(MapMarkerRenderer::ContextKind::LocalDoor);
+        if (controllerAction == -2) ImGui::CloseCurrentPopup();
+
         const auto& d = g_localContextMenuState;
         ImGui::TextColored(MapTheme::kPopupHeaderText(), "%s", d.name.c_str());
         ImGui::Separator();
+
+        // Keyed by NAME, same as the world-map vanilla destination: that is what
+        // MarkerManager's vanilla-destination API stores and compares.
         const bool isDest = MarkerManager::GetSingleton()->IsVanillaDestination(d.name);
-        if (ImGui::MenuItem(LocalizationManager::Get(isDest ? "Menu.RemoveDestination"
-                                                             : "Menu.SetDestination").c_str())) {
+        const bool destClicked = ImGui::MenuItem(LocalizationManager::Get(isDest ? "Menu.RemoveDestination"
+                                                                         : "Menu.SetDestination").c_str());
+        const ImVec2 destMin = ImGui::GetItemRectMin();
+        const ImVec2 destMax = ImGui::GetItemRectMax();
+        const MapMarkerRenderer::ContextRowHit row{ destMin.x, destMin.y, destMax.x, destMax.y, true };
+        if (destClicked || controllerAction == 0) {
             if (isDest) {
                 MarkerManager::GetSingleton()->RemoveVanillaDestination();
                 logger::info("[LocalDoor] cleared destination ({})", d.name);
             } else {
                 MarkerManager::GetSingleton()->SetVanillaDestination(
-                    d.name, d.doorFormID, d.doorWorldSpaceID, d.doorCellID, d.doorPosition, true);
+                    d.name, d.doorFormID, d.doorWorldSpaceID, d.doorCellID, d.doorPosition, /*fromLocalDoor=*/true);
                 logger::info("[LocalDoor] set destination {} ({:08X}) ws {:08X} cell {:08X} pos ({:.0f}, {:.0f}, {:.0f})",
                              d.name, d.doorFormID, d.doorWorldSpaceID, d.doorCellID,
                              d.doorPosition.x, d.doorPosition.y, d.doorPosition.z);
             }
+            if (controllerAction == 0) ImGui::CloseCurrentPopup();
+        } else if (controllerAction != -2) {
+            const ImVec2 pos = ImGui::GetWindowPos();
+            const ImVec2 size = ImGui::GetWindowSize();
+            mapRenderer->PublishControllerContextPopup(MapMarkerRenderer::ContextKind::LocalDoor,
+                                                       pos.x, pos.y, pos.x + size.x, pos.y + size.y,
+                                                       &row, 1);
         }
+
         ImGui::EndPopup();
     }
 
@@ -801,13 +914,11 @@ void HoverImageRenderer::Draw() {
         std::scoped_lock lock{ g_stateMutex };
         s = g_state;
     }
-    if (!s.valid || !s.isDiscovered) {
+    if (!s.valid) {
         return;
     }
 
     auto* dl = ImGui::GetForegroundDrawList();
-
-    // This replaces vanilla's hover card, which we suppress (see the STATUS
 
     if (!s.hasPosition) {
         return;
@@ -839,26 +950,32 @@ void HoverImageRenderer::Draw() {
     {
         auto& camData  = niCam->GetRuntimeData();
         auto& camData2 = niCam->GetRuntimeData2();
+
+        // Match pins and badges, including the authored flat-map tilt guard.
         const bool useFlatMapPlane = MapDraw::UsesFlatMapProjection(
             camData.worldToCam, mapMenuPtr->GetRuntimeData2()->worldSpace);
         RE::NiPoint3 mapPos = MapDraw::MapProjectionPoint(s.position, useFlatMapPlane);
+
         float sx = 0.0f, sy = 0.0f, sz = 0.0f;
         if (!RE::NiCamera::WorldPtToScreenPt3(
                 camData.worldToCam, camData2.port, mapPos, sx, sy, sz, 1e-5f) ||
             !MapDraw::ProjectionDepthValid(sz)) {
-            return;
+            return;   // behind the camera / unprojectable
         }
+
+        // sx/sy are normalized 0..1. Y is flipped.
         pinX = sx * disp.x;
         pinY = (1.0f - sy) * disp.y;
     }
 
     const auto* set = Settings::GetSingleton();
-    const float titleScale = std::clamp(set->titleScale,    0.5f, 3.0f);
-    const float bodyScale  = std::clamp(set->bodyScale,     0.5f, 3.0f);
-    const float noteScale  = std::clamp(set->noteTextScale, 0.5f, 3.0f);
+    const float fontScale     = UIScale::Font();
+    const float geometryScale = UIScale::Master();
+    const float titleScale    = std::clamp(set->titleScale,    0.5f, 3.0f) * fontScale;
+    const float bodyScale     = std::clamp(set->bodyScale,     0.5f, 3.0f) * fontScale;
+    const float noteScale     = std::clamp(set->noteTextScale, 0.5f, 3.0f) * fontScale;
 
     const float baseFS = ImGui::GetFontSize();
-
     ImFont* headingFont = FontManager::GetSingleton()->GetHeadingFont();
     const float titleBaseFS = headingFont ? headingFont->FontSize : baseFS;
     const float nameFS = titleBaseFS * titleScale;
@@ -871,43 +988,47 @@ void HoverImageRenderer::Draw() {
     };
     std::vector<StatRow> rows;
 
-    if (!s.typeLabel.empty()) {
+    if (set->statCardShowDetails && !s.typeLabel.empty()) {
         rows.push_back({ LocalizationManager::Get("StatCard.Type"), s.typeLabel });
     }
-    if (!s.holdName.empty()) {
+    if (set->statCardShowDetails && !s.holdName.empty()) {
         rows.push_back({ LocalizationManager::Get("StatCard.Hold"), s.holdName });
     }
 
-    if (s.bounty > 0) {
+    if (set->statCardShowDetails && s.bounty > 0) {
+        // Raw number, no translation key: a bare "{}" key carries no translatable
+        // text, so it would be a key nobody can ever translate.
         rows.push_back({ LocalizationManager::Get("StatCard.Bounty"),
                          std::to_string(s.bounty) });
     }
 
-    if (s.isCleared) {
+    if (set->statCardShowDetails && s.isCleared) {
         rows.push_back({ LocalizationManager::Get("StatCard.Cleared"),
                          LocalizationManager::Get("StatCard.ClearedYes") });
     }
 
+    // Note: our own annotation, keyed by ref FormID. Runtime 0xFF... FormIDs are
+    // our CNO-compat XMarker pool, never real locations.
     std::string note;
     if (s.formID != 0 && (s.formID & 0xFF000000u) != 0xFF000000u) {
         note = MarkerManager::GetSingleton()->GetVanillaNote(s.formID);
     }
 
-    constexpr float kPadX      = 12.0f;
-    constexpr float kPadY      = 12.0f;
-    constexpr float kRowGap    = 3.0f;
-    constexpr float kSepGap    = 6.0f;
-    constexpr float kNoteWrapW = 260.0f;
-    constexpr float kPinGap    = 14.0f;
-
+    // ---- Measure -----------------------------------------------------------
+    // Equal on both axes so the card's inset reads the same all the way round.
     constexpr float kValueColEm = 4.5f;
-    constexpr float kLabelGap   = 8.0f;
+    const float kPadX      = 12.0f * geometryScale;
+    const float kPadY      = 12.0f * geometryScale;
+    const float kRowGap    = 3.0f * geometryScale;
+    const float kSepGap    = 6.0f * geometryScale;
+    const float kNoteWrapW = 260.0f * geometryScale;   // hardcoded for now; was [NoteText] Width
+    const float kPinGap    = 14.0f * geometryScale;    // gap between pin and panel bottom
+    const float kLabelGap  = 8.0f * geometryScale;     // min gap when a label overruns the column
 
     auto* measureFont = ImGui::GetFont();
     auto measure = [measureFont](const char* txt, float fs, float wrap = 0.0f) -> ImVec2 {
         return measureFont->CalcTextSizeA(fs, FLT_MAX, wrap, txt);
     };
-
     ImFont* nameFont = headingFont ? headingFont : measureFont;
 
     const ImVec2 nameSz = nameFont->CalcTextSizeA(nameFS, FLT_MAX, 0.0f, s.name.c_str());
@@ -934,38 +1055,37 @@ void HoverImageRenderer::Draw() {
 
     float contentW = headerW;
     contentW = (std::max)(contentW, noteSz.x);
-
     contentW = (std::max)(contentW, notesLabelSz.x);
 
     float contentH = nameSz.y;
-
+    // Every stat row is one line at rowFS, so height is uniform per row.
     const float statRowH = rows.empty() ? 0.0f : measure("Ag", rowFS).y;
     contentH += static_cast<float>(rows.size()) * (kRowGap + statRowH);
-    if (!note.empty())     contentH += kSepGap + 1.0f + kSepGap +
+    if (!note.empty())     contentH += kSepGap + 1.0f * geometryScale + kSepGap +
                                        notesLabelSz.y + kRowGap + noteSz.y;
 
     const float panelW = contentW + kPadX * 2.0f;
     const float panelH = contentH + kPadY * 2.0f;
 
     const auto* place = Settings::GetSingleton();
-    const float offX = static_cast<float>(place->statCardOffsetX);
-    const float offY = static_cast<float>(place->statCardOffsetY);
+    const float offX = static_cast<float>(place->statCardOffsetX) * geometryScale;
+    const float offY = static_cast<float>(place->statCardOffsetY) * geometryScale;
 
     float px, py;
     switch (place->statCardAnchor) {
-        case 1:
+        case 1:  // Bottom
             px = pinX - panelW * 0.5f;
             py = pinY + kPinGap;
             break;
-        case 2:
+        case 2:  // Left
             px = pinX - kPinGap - panelW;
             py = pinY - panelH * 0.5f;
             break;
-        case 3:
+        case 3:  // Right
             px = pinX + kPinGap;
             py = pinY - panelH * 0.5f;
             break;
-        default:
+        default: // Top
             px = pinX - panelW * 0.5f;
             py = pinY - kPinGap - panelH;
             break;
@@ -973,7 +1093,7 @@ void HoverImageRenderer::Draw() {
     px += offX;
     py += offY;
 
-    constexpr float kEdge = 8.0f;
+    const float kEdge = 8.0f * geometryScale;
     px = std::clamp(px, kEdge, (std::max)(kEdge, disp.x - panelW - kEdge));
     py = std::clamp(py, kEdge, (std::max)(kEdge, disp.y - panelH - kEdge));
 
@@ -982,6 +1102,8 @@ void HoverImageRenderer::Draw() {
     const ImVec2 pMin{ px, py };
     const ImVec2 pMax{ px + panelW, py + panelH };
 
+    // MapTheme tokens are already ImU32 (IM_COL32), not ImVec4. Scale the alpha
+    // byte in place; no ColorConvertFloat4ToU32 needed.
     auto withA = [a](ImU32 c) -> ImU32 {
         const float ca = static_cast<float>((c >> IM_COL32_A_SHIFT) & 0xFF) * a;
         return (c & ~IM_COL32_A_MASK) |
@@ -993,7 +1115,7 @@ void HoverImageRenderer::Draw() {
     const ImU32 colBody = withA(IM_COL32(set->bodyColorR, set->bodyColorG,
                                          set->bodyColorB, 255));
 
-    MapDraw::DrawPanelCard(dl, pMin, pMax, set->BgCol(), set->BorderCol(), a);
+    MapDraw::DrawPanelCard(dl, pMin, pMax, set->BgCol(), set->BorderCol(), a, geometryScale);
 
     const ImU32 colSep    = withA(MapTheme::kSeparator);
 
@@ -1002,7 +1124,10 @@ void HoverImageRenderer::Draw() {
 
     const float tx = px + kPadX;
 
+    // Name (header).
     {
+        // Was a single hard 1px offset copy; now the shared spread shadow so the
+        // card header matches the list panel and Legend headings.
         MapDraw::DrawTextShadowed(dl, nameFont, nameFS, { tx, cy }, colName, s.name.c_str());
         cy += nameSz.y;
     }
@@ -1012,20 +1137,26 @@ void HoverImageRenderer::Draw() {
     for (const auto& r : rows) {
         cy += kRowGap;
         dl->AddText(font, rowFS, { tx, cy }, colLabel, r.label.c_str());
+
+        // Same clamp the measure pass used; the two must agree or a long label
+        // draws over its value on one runtime and not the other.
         const float labelW = measure(r.label.c_str(), rowFS).x;
         const float vx     = tx + (std::max)(valueColX, labelW + kLabelGap);
         dl->AddText(font, rowFS, { vx, cy }, colBody, r.value.c_str());
+
         cy += statRowH;
     }
 
     if (!note.empty()) {
         cy += kSepGap;
-        dl->AddLine({ px + kPadX, cy }, { px + panelW - kPadX, cy }, colSep, 1.0f);
-        cy += 1.0f + kSepGap;
+        dl->AddLine({ px + kPadX, cy }, { px + panelW - kPadX, cy }, colSep, 1.0f * geometryScale);
+        cy += 1.0f * geometryScale + kSepGap;
+
         dl->AddText(font, rowFS, { tx, cy },
                     MapDraw::FadeAlpha(colBody, MapDraw::kLabelAlpha),
                     notesLabel.c_str());
         cy += notesLabelSz.y + kRowGap;
+
         dl->AddText(font, noteFS, { tx, cy }, colBody,
                     note.c_str(), nullptr, noteWrapW);
     }
@@ -1055,11 +1186,14 @@ void HoverImageRenderer::Draw() {
     }
 
     const float aspect = static_cast<float>(size.width) / static_cast<float>(size.height);
-
+    // Fraction of the panel width: 1.0 sits flush with the card edges, lower
+    // insets it. Centred on the panel so it stays aligned at any width.
     const float imgW   = panelW * std::clamp(set->markerImageWidth, 0.25f, 1.0f);
     const float imgH   = imgW / aspect;
     const float imgX   = px + (panelW - imgW) * 0.5f;
 
+    // Multiplied into the card's own fade alpha, never replacing it, so the
+    // image still fades in/out with the panel instead of popping.
     const float imgA = a * std::clamp(set->markerImageAlpha, 0.0f, 1.0f);
     const ImU32 tint = IM_COL32(255, 255, 255, static_cast<int>(255 * imgA));
     dl->AddImage(reinterpret_cast<ImTextureID>(srv),
@@ -1075,6 +1209,7 @@ void HoverImageRenderer::OpenContextMenu() {
     }
 }
 
+
 namespace {
     std::int32_t GetLocalHoveredIndex(RE::MapMenu** a_outMenu = nullptr) {
         if (a_outMenu) *a_outMenu = nullptr;
@@ -1082,9 +1217,11 @@ namespace {
         if (!ui || !ui->IsMenuOpen(RE::MapMenu::MENU_NAME)) return -1;
         auto mapMenu = ui->GetMenu<RE::MapMenu>();
         if (!mapMenu) return -1;
+
         const auto lmBase =
             reinterpret_cast<std::uintptr_t>(mapMenu.get()) + kLocalMapBaseOffset;
         if (*reinterpret_cast<const std::uint8_t*>(lmBase + kLocalMapModeOffset) != 1) return -1;
+
         if (a_outMenu) *a_outMenu = mapMenu.get();
         return *reinterpret_cast<const std::int32_t*>(lmBase + kLocalHoveredIdxOffset);
     }
@@ -1101,7 +1238,7 @@ void HoverImageRenderer::OpenLocalContextMenu() {
 
     LocalIdentity id{};
     if (!ResolveLocalIdentity(menu, idx, id)) return;
-
+    // A door with no name is not something the player can meaningfully mark.
     if (id.name.empty()) return;
 
     g_localContextMenuState = id;

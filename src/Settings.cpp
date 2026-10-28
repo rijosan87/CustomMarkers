@@ -1,764 +1,757 @@
-// Reads and writes configuration settings from INI.
-
 #include "Settings.h"
+#include "InputHandler.h"  // FormatHotkeyWithModifier for the load-time log line
 
-#include "InputHandler.h"
+#include <SimpleIni.h>
+#include <REL/Module.h>
+#include <algorithm> // std::clamp, std::max
+#include <cmath>     // std::isfinite
+#include <cstdio>    // std::snprintf
+#include <cstdlib>   // std::strtoul
+#include <filesystem>
+#include <system_error>
 
-#include <Windows.h>
-#include <algorithm>
-#include <cstdio>
+namespace fs = std::filesystem;
 
-static std::wstring X100(float v) {
-    return std::to_wstring(static_cast<int>(v * 100.0f + 0.5f));
+static fs::path GetIniPath() {
+    const fs::path runtimePath{ REL::Module::get().filePath().data() };
+    return (runtimePath.parent_path() / L"Data" / L"SKSE" / L"Plugins" /
+            L"CustomMarkers.ini").lexically_normal();
 }
 
-static const wchar_t* GetIniPath() {
-    static constexpr auto kPrimary = L"Data/SKSE/Plugins/CustomMarkers.ini";
-    static constexpr auto kLegacy = L"Data/SKSE/Plugins/CustomMapMarkers.ini";
-    if (std::filesystem::exists(kPrimary)) {
-        return kPrimary;
+static bool EnsureIniDirectory(const fs::path& a_path) {
+    std::error_code ec;
+    fs::create_directories(a_path.parent_path(), ec);
+    if (ec) {
+        logger::error("Failed to create CustomMarkers.ini directory '{}': {}",
+                      a_path.parent_path().string(), ec.message());
+        return false;
     }
-    if (std::filesystem::exists(kLegacy)) {
-        logger::info("Found legacy CustomMapMarkers.ini, loading from legacy path");
-        return kLegacy;
-    }
-    return kPrimary;
+    return true;
 }
 
 namespace {
-    void ReadColor3Hex(const wchar_t* a_section, const wchar_t* a_key,
-                       const wchar_t* a_legacyPrefix,
-                       std::int32_t& a_r, std::int32_t& a_g, std::int32_t& a_b,
-                       const wchar_t* a_path) {
-        wchar_t buffer[256];
-        GetPrivateProfileStringW(a_section, a_key, L"\0", buffer, 256, a_path);
-        if (buffer[0] != L'\0') {
-            const unsigned long rgb = std::wcstoul(buffer, nullptr, 16);
+    // Read 6-char RGB hex string (RRGGBB). Falls back to legacy keys if hex key is missing.
+    void ReadColor3Hex(CSimpleIniA& a_ini, const char* a_section, const char* a_key,
+                       const char* a_legacyPrefix,
+                       std::int32_t& a_r, std::int32_t& a_g, std::int32_t& a_b) {
+        const char* val = a_ini.GetValue(a_section, a_key, nullptr);
+        if (val && val[0] != '\0') {
+            const unsigned long rgb = std::strtoul(val, nullptr, 16);
             a_r = static_cast<std::int32_t>((rgb >> 16) & 0xFF);
             a_g = static_cast<std::int32_t>((rgb >> 8)  & 0xFF);
             a_b = static_cast<std::int32_t>( rgb        & 0xFF);
             return;
         }
+
         if (a_legacyPrefix) {
-            std::wstring keyR = std::wstring(a_legacyPrefix) + L"R";
-            std::wstring keyG = std::wstring(a_legacyPrefix) + L"G";
-            std::wstring keyB = std::wstring(a_legacyPrefix) + L"B";
-            GetPrivateProfileStringW(a_section, keyR.c_str(), std::to_wstring(a_r).c_str(), buffer, 256, a_path);
-            a_r = std::clamp(_wtoi(buffer), 0, 255);
-            GetPrivateProfileStringW(a_section, keyG.c_str(), std::to_wstring(a_g).c_str(), buffer, 256, a_path);
-            a_g = std::clamp(_wtoi(buffer), 0, 255);
-            GetPrivateProfileStringW(a_section, keyB.c_str(), std::to_wstring(a_b).c_str(), buffer, 256, a_path);
-            a_b = std::clamp(_wtoi(buffer), 0, 255);
+            std::string keyR = std::string(a_legacyPrefix) + "R";
+            std::string keyG = std::string(a_legacyPrefix) + "G";
+            std::string keyB = std::string(a_legacyPrefix) + "B";
+            a_r = std::clamp(static_cast<std::int32_t>(a_ini.GetLongValue(a_section, keyR.c_str(), a_r)), 0, 255);
+            a_g = std::clamp(static_cast<std::int32_t>(a_ini.GetLongValue(a_section, keyG.c_str(), a_g)), 0, 255);
+            a_b = std::clamp(static_cast<std::int32_t>(a_ini.GetLongValue(a_section, keyB.c_str(), a_b)), 0, 255);
         }
     }
 
-    void ReadColor4Hex(const wchar_t* a_section, const wchar_t* a_key,
-                       const wchar_t* a_legacyPrefix,
-                       std::int32_t& a_r, std::int32_t& a_g, std::int32_t& a_b, std::int32_t& a_a,
-                       const wchar_t* a_path) {
-        wchar_t buffer[256];
-        GetPrivateProfileStringW(a_section, a_key, L"\0", buffer, 256, a_path);
-        if (buffer[0] != L'\0') {
-            const unsigned long argb = std::wcstoul(buffer, nullptr, 16);
+    // Read 8-char ARGB hex string (AARRGGBB). Falls back to legacy keys if hex key is missing.
+    void ReadColor4Hex(CSimpleIniA& a_ini, const char* a_section, const char* a_key,
+                       const char* a_legacyPrefix,
+                       std::int32_t& a_r, std::int32_t& a_g, std::int32_t& a_b, std::int32_t& a_a) {
+        const char* val = a_ini.GetValue(a_section, a_key, nullptr);
+        if (val && val[0] != '\0') {
+            const unsigned long argb = std::strtoul(val, nullptr, 16);
             a_a = static_cast<std::int32_t>((argb >> 24) & 0xFF);
             a_r = static_cast<std::int32_t>((argb >> 16) & 0xFF);
             a_g = static_cast<std::int32_t>((argb >> 8)  & 0xFF);
             a_b = static_cast<std::int32_t>( argb        & 0xFF);
             return;
         }
+
         if (a_legacyPrefix) {
-            std::wstring keyR = std::wstring(a_legacyPrefix) + L"R";
-            std::wstring keyG = std::wstring(a_legacyPrefix) + L"G";
-            std::wstring keyB = std::wstring(a_legacyPrefix) + L"B";
-            std::wstring keyA = std::wstring(a_legacyPrefix) + L"A";
-            GetPrivateProfileStringW(a_section, keyR.c_str(), std::to_wstring(a_r).c_str(), buffer, 256, a_path);
-            a_r = std::clamp(_wtoi(buffer), 0, 255);
-            GetPrivateProfileStringW(a_section, keyG.c_str(), std::to_wstring(a_g).c_str(), buffer, 256, a_path);
-            a_g = std::clamp(_wtoi(buffer), 0, 255);
-            GetPrivateProfileStringW(a_section, keyB.c_str(), std::to_wstring(a_b).c_str(), buffer, 256, a_path);
-            a_b = std::clamp(_wtoi(buffer), 0, 255);
-            GetPrivateProfileStringW(a_section, keyA.c_str(), std::to_wstring(a_a).c_str(), buffer, 256, a_path);
-            a_a = std::clamp(_wtoi(buffer), 0, 255);
+            std::string keyR = std::string(a_legacyPrefix) + "R";
+            std::string keyG = std::string(a_legacyPrefix) + "G";
+            std::string keyB = std::string(a_legacyPrefix) + "B";
+            std::string keyA = std::string(a_legacyPrefix) + "A";
+            a_r = std::clamp(static_cast<std::int32_t>(a_ini.GetLongValue(a_section, keyR.c_str(), a_r)), 0, 255);
+            a_g = std::clamp(static_cast<std::int32_t>(a_ini.GetLongValue(a_section, keyG.c_str(), a_g)), 0, 255);
+            a_b = std::clamp(static_cast<std::int32_t>(a_ini.GetLongValue(a_section, keyB.c_str(), a_b)), 0, 255);
+            a_a = std::clamp(static_cast<std::int32_t>(a_ini.GetLongValue(a_section, keyA.c_str(), a_a)), 0, 255);
         }
     }
 
-    void WriteColor3Hex(const wchar_t* a_section, const wchar_t* a_key,
-                        const wchar_t* a_legacyPrefix,
-                        std::int32_t a_r, std::int32_t a_g, std::int32_t a_b,
-                        const wchar_t* a_path) {
+    // Write 6-char RGB hex string (RRGGBB).
+    void WriteColor3Hex(CSimpleIniA& a_ini, const char* a_section, const char* a_key,
+                        std::int32_t a_r, std::int32_t a_g, std::int32_t a_b) {
         const unsigned long rgb =
             (static_cast<unsigned long>(a_r & 0xFF) << 16) |
             (static_cast<unsigned long>(a_g & 0xFF) << 8)  |
             (static_cast<unsigned long>(a_b & 0xFF));
-        wchar_t hex[16];
-        swprintf_s(hex, L"%06lX", rgb);
-        WritePrivateProfileStringW(a_section, a_key, hex, a_path);
-        if (a_legacyPrefix) {
-            std::wstring keyR = std::wstring(a_legacyPrefix) + L"R";
-            std::wstring keyG = std::wstring(a_legacyPrefix) + L"G";
-            std::wstring keyB = std::wstring(a_legacyPrefix) + L"B";
-            WritePrivateProfileStringW(a_section, keyR.c_str(), nullptr, a_path);
-            WritePrivateProfileStringW(a_section, keyG.c_str(), nullptr, a_path);
-            WritePrivateProfileStringW(a_section, keyB.c_str(), nullptr, a_path);
-        }
+        char hex[16];
+        std::snprintf(hex, sizeof(hex), "%06lX", rgb);
+        a_ini.SetValue(a_section, a_key, hex);
     }
 
-    void WriteColor4Hex(const wchar_t* a_section, const wchar_t* a_key,
-                        const wchar_t* a_legacyPrefix,
-                        std::int32_t a_r, std::int32_t a_g, std::int32_t a_b, std::int32_t a_a,
-                        const wchar_t* a_path) {
+    // Write 8-char ARGB hex string (AARRGGBB).
+    void WriteColor4Hex(CSimpleIniA& a_ini, const char* a_section, const char* a_key,
+                        std::int32_t a_r, std::int32_t a_g, std::int32_t a_b, std::int32_t a_a) {
         const unsigned long argb =
             (static_cast<unsigned long>(a_a & 0xFF) << 24) |
             (static_cast<unsigned long>(a_r & 0xFF) << 16) |
             (static_cast<unsigned long>(a_g & 0xFF) << 8)  |
             (static_cast<unsigned long>(a_b & 0xFF));
-        wchar_t hex[16];
-        swprintf_s(hex, L"%08lX", argb);
-        WritePrivateProfileStringW(a_section, a_key, hex, a_path);
-        if (a_legacyPrefix) {
-            std::wstring keyR = std::wstring(a_legacyPrefix) + L"R";
-            std::wstring keyG = std::wstring(a_legacyPrefix) + L"G";
-            std::wstring keyB = std::wstring(a_legacyPrefix) + L"B";
-            std::wstring keyA = std::wstring(a_legacyPrefix) + L"A";
-            WritePrivateProfileStringW(a_section, keyR.c_str(), nullptr, a_path);
-            WritePrivateProfileStringW(a_section, keyG.c_str(), nullptr, a_path);
-            WritePrivateProfileStringW(a_section, keyB.c_str(), nullptr, a_path);
-            WritePrivateProfileStringW(a_section, keyA.c_str(), nullptr, a_path);
-        }
+        char hex[16];
+        std::snprintf(hex, sizeof(hex), "%08lX", argb);
+        a_ini.SetValue(a_section, a_key, hex);
     }
 }
 
 void Settings::Load() {
     const auto path = GetIniPath();
+    const bool fileExists = fs::exists(path);
 
-    wchar_t buffer[256];
-
-    GetPrivateProfileStringW(L"Hotkey", L"ListPanelKey", std::to_wstring(listPanelKey).c_str(), buffer, 256, path);
-    listPanelKey = _wtoi(buffer);
-    GetPrivateProfileStringW(L"Hotkey", L"ListPanelModifier", std::to_wstring(listPanelModifier).c_str(), buffer, 256, path);
-    listPanelModifier = _wtoi(buffer);
-
-    GetPrivateProfileStringW(L"Hotkey", L"PathTrackKey", std::to_wstring(pathTrackKey).c_str(), buffer, 256, path);
-    pathTrackKey = _wtoi(buffer);
-    GetPrivateProfileStringW(L"Hotkey", L"PathTrackModifier", std::to_wstring(pathTrackModifier).c_str(), buffer, 256, path);
-    pathTrackModifier = _wtoi(buffer);
-
-    wchar_t langDefault[256];
-    MultiByteToWideChar(CP_UTF8, 0, language.c_str(), -1, langDefault, 256);
-    GetPrivateProfileStringW(L"Localization", L"Language", langDefault, buffer, 256, path);
-    char languageBuf[256];
-    WideCharToMultiByte(CP_UTF8, 0, buffer, -1, languageBuf, 256, nullptr, nullptr);
-    language = std::string(languageBuf);
-
-    GetPrivateProfileStringW(L"Localization", L"FontSize", std::to_wstring(fontSize).c_str(), buffer, 256, path);
-    fontSize = std::clamp(_wtoi(buffer), 10, 48);
-
-    GetPrivateProfileStringW(L"Localization", L"HeadingFontSize", std::to_wstring(headingFontSize).c_str(), buffer, 256, path);
-    headingFontSize = std::clamp(_wtoi(buffer), 0, 72);
-
-    wchar_t levelDefault[64];
-    MultiByteToWideChar(CP_UTF8, 0, logLevel.c_str(), -1, levelDefault, 64);
-    GetPrivateProfileStringW(L"Logging", L"Level", levelDefault, buffer, 256, path);
-    char levelBuf[64];
-    WideCharToMultiByte(CP_UTF8, 0, buffer, -1, levelBuf, 64, nullptr, nullptr);
-    logLevel = std::string(levelBuf);
-
-    GetPrivateProfileStringW(L"Menu", L"SettingsKey", std::to_wstring(menuSettingsKey).c_str(), buffer, 256, path);
-    menuSettingsKey = _wtoi(buffer);
-
-    if (menuSettingsKey < 1) {
-        menuSettingsKey = 0x2D;
+    if (!fileExists) {
+        logger::info("CustomMarkers.ini not found; creating it from defaults");
+        Save();
+        return;
     }
-    GetPrivateProfileStringW(L"Menu", L"SettingsModifier", std::to_wstring(menuSettingsModifier).c_str(), buffer, 256, path);
-    menuSettingsModifier = _wtoi(buffer);
 
-    GetPrivateProfileStringW(L"Menu", L"ActiveTab", std::to_wstring(menuActiveTab).c_str(), buffer, 256, path);
-    menuActiveTab = _wtoi(buffer);
+    CSimpleIniA ini;
+    ini.SetUnicode();
 
-    GetPrivateProfileStringW(L"Menu", L"PosX", std::to_wstring(menuPosX).c_str(), buffer, 256, path);
-    menuPosX = _wtoi(buffer);
+    if (const SI_Error rc = ini.LoadFile(path.c_str()); rc < SI_OK) {
+        logger::error("Failed to load CustomMarkers.ini from '{}': SimpleIni error {}",
+                      path.string(), rc);
+        return;
+    }
 
-    GetPrivateProfileStringW(L"Menu", L"PosY", std::to_wstring(menuPosY).c_str(), buffer, 256, path);
-    menuPosY = _wtoi(buffer);
+    // Hotkeys. Each key pairs with its OWN modifier (see Settings.h). -1 = unbound.
+    listPanelKey = static_cast<std::int32_t>(ini.GetLongValue("Hotkey", "ListPanelKey", listPanelKey));
+    listPanelModifier = static_cast<std::int32_t>(ini.GetLongValue("Hotkey", "ListPanelModifier", listPanelModifier));
 
-    GetPrivateProfileStringW(L"Menu", L"Width", std::to_wstring(menuWidth).c_str(), buffer, 256, path);
-    menuWidth = _wtoi(buffer);
+    pathTrackKey = static_cast<std::int32_t>(ini.GetLongValue("Hotkey", "PathTrackKey", pathTrackKey));
+    pathTrackModifier = static_cast<std::int32_t>(ini.GetLongValue("Hotkey", "PathTrackModifier", pathTrackModifier));
 
-    GetPrivateProfileStringW(L"Menu", L"Height", std::to_wstring(menuHeight).c_str(), buffer, 256, path);
-    menuHeight = _wtoi(buffer);
+    language = ini.GetValue("Localization", "Language", language.c_str());
+    fontSize = std::clamp(static_cast<std::int32_t>(ini.GetLongValue("Localization", "FontSize", fontSize)), 10, 48);
+    headingFontSize = std::clamp(static_cast<std::int32_t>(ini.GetLongValue("Localization", "HeadingFontSize", headingFontSize)), 0, 72);
 
-    GetPrivateProfileStringW(L"ListPanel", L"Width", std::to_wstring(listPanelWidth).c_str(), buffer, 256, path);
-    listPanelWidth = _wtoi(buffer);
+    logLevel = ini.GetValue("Logging", "Level", logLevel.c_str());
 
-    GetPrivateProfileStringW(L"Appearance", L"TitleScale", X100(titleScale).c_str(), buffer, 256, path);
-    titleScale = std::clamp(_wtoi(buffer) / 100.0f, 0.5f, 3.0f);
+    menuSettingsKey = static_cast<std::int32_t>(ini.GetLongValue("Menu", "SettingsKey", menuSettingsKey));
+    menuSettingsModifier = static_cast<std::int32_t>(ini.GetLongValue("Menu", "SettingsModifier", menuSettingsModifier));
 
-    GetPrivateProfileStringW(L"Appearance", L"BodyScale", X100(bodyScale).c_str(), buffer, 256, path);
-    bodyScale = std::clamp(_wtoi(buffer) / 100.0f, 0.5f, 3.0f);
+    menuActiveTab = static_cast<std::int32_t>(ini.GetLongValue("Menu", "ActiveTab", menuActiveTab));
+    menuPosX = static_cast<std::int32_t>(ini.GetLongValue("Menu", "PosX", menuPosX));
+    menuPosY = static_cast<std::int32_t>(ini.GetLongValue("Menu", "PosY", menuPosY));
+    menuWidth = static_cast<std::int32_t>(ini.GetLongValue("Menu", "Width", menuWidth));
+    menuHeight = static_cast<std::int32_t>(ini.GetLongValue("Menu", "Height", menuHeight));
 
-    GetPrivateProfileStringW(L"ListPanel", L"PosX", std::to_wstring(listPanelPosX).c_str(), buffer, 256, path);
-    listPanelPosX = _wtoi(buffer);
+    listPanelWidth = static_cast<std::int32_t>(ini.GetLongValue("ListPanel", "Width", listPanelWidth));
+    listPanelVisible = (ini.GetLongValue("ListPanel", "Visible", listPanelVisible ? 1L : 0L) != 0);
 
-    GetPrivateProfileStringW(L"ListPanel", L"PosY", std::to_wstring(listPanelPosY).c_str(), buffer, 256, path);
-    listPanelPosY = _wtoi(buffer);
+    interfaceScale = std::clamp(static_cast<std::int32_t>(ini.GetLongValue("Appearance", "InterfaceScale", interfaceScale)), 50, 200);
+    titleScale = std::clamp(static_cast<float>(ini.GetLongValue("Appearance", "TitleScale", static_cast<long>(titleScale * 100.0f + 0.5f))) / 100.0f, 0.5f, 3.0f);
+    bodyScale = std::clamp(static_cast<float>(ini.GetLongValue("Appearance", "BodyScale", static_cast<long>(bodyScale * 100.0f + 0.5f))) / 100.0f, 0.5f, 3.0f);
 
-    GetPrivateProfileStringW(L"ListPanel", L"ShowOverview", std::to_wstring(listShowOverview ? 1 : 0).c_str(), buffer, 256, path);
-    listShowOverview = (_wtoi(buffer) != 0);
+    listPanelPosX = static_cast<std::int32_t>(ini.GetLongValue("ListPanel", "PosX", listPanelPosX));
+    listPanelPosY = static_cast<std::int32_t>(ini.GetLongValue("ListPanel", "PosY", listPanelPosY));
 
-    GetPrivateProfileStringW(L"ListPanel", L"ShowActiveQuests", std::to_wstring(listShowActiveQuests ? 1 : 0).c_str(), buffer, 256, path);
-    listShowActiveQuests = (_wtoi(buffer) != 0);
+    listShowOverview = (ini.GetLongValue("ListPanel", "ShowOverview", listShowOverview ? 1L : 0L) != 0);
+    listShowActiveQuests = (ini.GetLongValue("ListPanel", "ShowActiveQuests", listShowActiveQuests ? 1L : 0L) != 0);
 
-    GetPrivateProfileStringW(L"ListPanel", L"ActiveTab", std::to_wstring(listActiveTab).c_str(), buffer, 256, path);
-    listActiveTab = std::clamp(_wtoi(buffer), 0, 3);
+    // Clamped on read: a stale index from an INI written by a build with more
+    // tabs would index past the end of the tab table.
+    listActiveTab = std::clamp(static_cast<std::int32_t>(ini.GetLongValue("ListPanel", "ActiveTab", listActiveTab)), 0, 3);
 
-    GetPrivateProfileStringW(L"ListPanel", L"MinHeightPct", std::to_wstring(listPanelMinHeightPct).c_str(), buffer, 256, path);
-    listPanelMinHeightPct = std::clamp(_wtoi(buffer), 0, 95);
+    listPanelMinHeightPct = std::clamp(static_cast<std::int32_t>(ini.GetLongValue("ListPanel", "MinHeightPct", listPanelMinHeightPct)), 0, 95);
+    listPanelMaxHeightPct = std::clamp(static_cast<std::int32_t>(ini.GetLongValue("ListPanel", "MaxHeightPct", listPanelMaxHeightPct)), 30, 95);
 
-    GetPrivateProfileStringW(L"ListPanel", L"MaxHeightPct", std::to_wstring(listPanelMaxHeightPct).c_str(), buffer, 256, path);
-    listPanelMaxHeightPct = std::clamp(_wtoi(buffer), 30, 95);
+    showFilterPanel = (ini.GetLongValue("Filters", "Show", showFilterPanel ? 1L : 0L) != 0);
+    filterPosX = static_cast<std::int32_t>(ini.GetLongValue("Filters", "PosX", filterPosX));
+    filterPosY = static_cast<std::int32_t>(ini.GetLongValue("Filters", "PosY", filterPosY));
+    filterCollapsed = (ini.GetLongValue("Filters", "Collapsed", filterCollapsed ? 1L : 0L) != 0);
 
-    GetPrivateProfileStringW(L"Filters", L"Show", std::to_wstring(showFilterPanel ? 1 : 0).c_str(), buffer, 256, path);
-    showFilterPanel = (_wtoi(buffer) != 0);
+    listPanelUseCustomBg = (ini.GetLongValue("ListPanel", "UseCustomBg", listPanelUseCustomBg ? 1L : 0L) != 0);
+    listPanelBgIndex = std::max(0, static_cast<int>(ini.GetLongValue("ListPanel", "BgIndex", listPanelBgIndex)));
 
-    GetPrivateProfileStringW(L"Filters", L"PosX", std::to_wstring(filterPosX).c_str(), buffer, 256, path);
-    filterPosX = _wtoi(buffer);
+    // Notes are free text and can run long, so they get their own scale.
+    noteTextScale = std::clamp(static_cast<float>(ini.GetLongValue("StatCard", "NoteScale", static_cast<long>(noteTextScale * 100.0f + 0.5f))) / 100.0f, 0.5f, 3.0f);
+    statCardAnchor = std::clamp(static_cast<std::int32_t>(ini.GetLongValue("StatCard", "Anchor", statCardAnchor)), 0, 3);
+    statCardOffsetX = static_cast<std::int32_t>(ini.GetLongValue("StatCard", "OffsetX", statCardOffsetX));
+    statCardOffsetY = static_cast<std::int32_t>(ini.GetLongValue("StatCard", "OffsetY", statCardOffsetY));
+    statCardShowDetails = (ini.GetLongValue("StatCard", "ShowDetails", statCardShowDetails ? 1L : 0L) != 0);
 
-    GetPrivateProfileStringW(L"Filters", L"PosY", std::to_wstring(filterPosY).c_str(), buffer, 256, path);
-    filterPosY = _wtoi(buffer);
-
-    GetPrivateProfileStringW(L"Filters", L"Collapsed", std::to_wstring(filterCollapsed ? 1 : 0).c_str(), buffer, 256, path);
-    filterCollapsed = (_wtoi(buffer) != 0);
-
-    GetPrivateProfileStringW(L"ListPanel", L"UseCustomBg", std::to_wstring(listPanelUseCustomBg ? 1 : 0).c_str(), buffer, 256, path);
-    listPanelUseCustomBg = (_wtoi(buffer) != 0);
-
-    GetPrivateProfileStringW(L"ListPanel", L"BgIndex", std::to_wstring(listPanelBgIndex).c_str(), buffer, 256, path);
-    listPanelBgIndex = std::max(0, _wtoi(buffer));
-
-    GetPrivateProfileStringW(L"StatCard", L"NoteScale", X100(noteTextScale).c_str(), buffer, 256, path);
-    noteTextScale = std::clamp(_wtoi(buffer) / 100.0f, 0.5f, 3.0f);
-
-    GetPrivateProfileStringW(L"StatCard", L"Anchor", std::to_wstring(statCardAnchor).c_str(), buffer, 256, path);
-    statCardAnchor = std::clamp(_wtoi(buffer), 0, 3);
-    GetPrivateProfileStringW(L"StatCard", L"OffsetX", std::to_wstring(statCardOffsetX).c_str(), buffer, 256, path);
-    statCardOffsetX = _wtoi(buffer);
-    GetPrivateProfileStringW(L"StatCard", L"OffsetY", std::to_wstring(statCardOffsetY).c_str(), buffer, 256, path);
-    statCardOffsetY = _wtoi(buffer);
-
-    GetPrivateProfileStringW(L"NavigationOverlay", L"GlanceInteriorVisible", std::to_wstring(navGlanceInteriorVisible ? 1 : 0).c_str(), buffer, 256, path);
-    navGlanceInteriorVisible = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"GlanceExteriorVisible", std::to_wstring(navGlanceExteriorVisible ? 1 : 0).c_str(), buffer, 256, path);
-    navGlanceExteriorVisible = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"InspectInteriorVisible", std::to_wstring(navInspectInteriorVisible ? 1 : 0).c_str(), buffer, 256, path);
-    navInspectInteriorVisible = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"InspectExteriorVisible", std::to_wstring(navInspectExteriorVisible ? 1 : 0).c_str(), buffer, 256, path);
-    navInspectExteriorVisible = (_wtoi(buffer) != 0);
-
-    GetPrivateProfileStringW(L"NavigationOverlay", L"InspectKeyDIK", std::to_wstring(navInspectKey).c_str(), buffer, 256, path);
-    navInspectKey = _wtoi(buffer);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"InspectModifier", std::to_wstring(navInspectModifier).c_str(), buffer, 256, path);
-    navInspectModifier = _wtoi(buffer);
-
-    GetPrivateProfileStringW(L"NavigationOverlay", L"GlancePosX", std::to_wstring(navGlancePosX).c_str(), buffer, 256, path);
-    if (int v = _wtoi(buffer); v >= 0) navGlancePosX = v;
-    GetPrivateProfileStringW(L"NavigationOverlay", L"GlancePosY", std::to_wstring(navGlancePosY).c_str(), buffer, 256, path);
-    if (int v = _wtoi(buffer); v >= 0) navGlancePosY = v;
-    GetPrivateProfileStringW(L"NavigationOverlay", L"GlanceSize", std::to_wstring(navGlanceSize).c_str(), buffer, 256, path);
-
-    navGlanceSize = std::clamp(_wtoi(buffer), 100, 300);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"InspectSizePct", std::to_wstring(navInspectSizePct).c_str(), buffer, 256, path);
-    navInspectSizePct = _wtoi(buffer);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"RefreshOnInspect", std::to_wstring(navRefreshOnInspect ? 1 : 0).c_str(), buffer, 256, path);
-    navRefreshOnInspect = (_wtoi(buffer) != 0);
-
-    GetPrivateProfileStringW(L"NavigationOverlay", L"InspectModeToggleKeyDIK", std::to_wstring(navInspectModeToggleKey).c_str(), buffer, 256, path);
-    navInspectModeToggleKey = _wtoi(buffer);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"InspectModeToggleModifier", std::to_wstring(navInspectModeToggleModifier).c_str(), buffer, 256, path);
-    navInspectModeToggleModifier = _wtoi(buffer);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"InspectDefaultMode", std::to_wstring(navInspectDefaultMode).c_str(), buffer, 256, path);
-    navInspectDefaultMode = std::clamp(_wtoi(buffer), 0, 1);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"InspectRadarRangeUnits", std::to_wstring(static_cast<int>(navInspectRadarRangeUnits)).c_str(), buffer, 256, path);
-    navInspectRadarRangeUnits = std::max(static_cast<float>(_wtoi(buffer)), 100.0f);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"GlanceRangeUnits", std::to_wstring(static_cast<int>(navGlanceRangeUnits)).c_str(), buffer, 256, path);
-    navGlanceRangeUnits = std::max(static_cast<float>(_wtoi(buffer)), 200.0f);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"QuickMarkKeyDIK", std::to_wstring(navQuickMarkKey).c_str(), buffer, 256, path);
-    navQuickMarkKey = _wtoi(buffer);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"QuickMarkModifier", std::to_wstring(navQuickMarkModifier).c_str(), buffer, 256, path);
-    navQuickMarkModifier = _wtoi(buffer);
-
-    GetPrivateProfileStringW(L"LookPin", L"Enabled", std::to_wstring(lookPinEnabled ? 1 : 0).c_str(), buffer, 256, path);
-    lookPinEnabled = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"LookPin", L"KeyDIK", std::to_wstring(lookPinKey).c_str(), buffer, 256, path);
-    lookPinKey = _wtoi(buffer);
-    GetPrivateProfileStringW(L"LookPin", L"Modifier", std::to_wstring(lookPinModifier).c_str(), buffer, 256, path);
-    lookPinModifier = _wtoi(buffer);
-
-    auto loadEntBool = [&](const wchar_t* a_key, bool& a_field) {
-        GetPrivateProfileStringW(L"NavigationOverlay", a_key, std::to_wstring(a_field ? 1 : 0).c_str(), buffer, 256, path);
-        a_field = (_wtoi(buffer) != 0);
-    };
-    loadEntBool(L"GlanceEntContChest",      navGlanceEntContChest);
-    loadEntBool(L"GlanceEntContBarrel",     navGlanceEntContBarrel);
-    loadEntBool(L"GlanceEntContSack",       navGlanceEntContSack);
-    loadEntBool(L"GlanceEntContUrn",        navGlanceEntContUrn);
-    loadEntBool(L"GlanceEntContCoffin",     navGlanceEntContCoffin);
-    loadEntBool(L"GlanceEntContStrongbox",  navGlanceEntContStrongbox);
-    loadEntBool(L"GlanceEntLootWeapon",     navGlanceEntLootWeapon);
-    loadEntBool(L"GlanceEntLootAmmo",       navGlanceEntLootAmmo);
-    loadEntBool(L"GlanceEntLootArmor",      navGlanceEntLootArmor);
-    loadEntBool(L"GlanceEntLootGold",       navGlanceEntLootGold);
-    loadEntBool(L"GlanceEntLootKey",        navGlanceEntLootKey);
-    loadEntBool(L"GlanceEntLootPotion",     navGlanceEntLootPotion);
-    loadEntBool(L"GlanceEntLootFood",       navGlanceEntLootFood);
-    loadEntBool(L"GlanceEntLootDrink",      navGlanceEntLootDrink);
-    loadEntBool(L"GlanceEntLootBook",       navGlanceEntLootBook);
-    loadEntBool(L"GlanceEntLootSoulGem",    navGlanceEntLootSoulGem);
-    loadEntBool(L"GlanceEntLootScroll",     navGlanceEntLootScroll);
-    loadEntBool(L"GlanceEntCorpseHumanoid", navGlanceEntCorpseHumanoid);
-    loadEntBool(L"GlanceEntCorpseCreature", navGlanceEntCorpseCreature);
-    loadEntBool(L"GlanceEntDoorLoad",       navGlanceEntDoorLoad);
-    loadEntBool(L"GlanceEntDoorRegular",    navGlanceEntDoorRegular);
-    loadEntBool(L"GlanceEntIngrLoose",      navGlanceEntIngrLoose);
-    loadEntBool(L"GlanceEntIngrPlant",      navGlanceEntIngrPlant);
-
-    loadEntBool(L"InspectEntContChest",      navInspectEntContChest);
-    loadEntBool(L"InspectEntContBarrel",     navInspectEntContBarrel);
-    loadEntBool(L"InspectEntContSack",       navInspectEntContSack);
-    loadEntBool(L"InspectEntContUrn",        navInspectEntContUrn);
-    loadEntBool(L"InspectEntContCoffin",     navInspectEntContCoffin);
-    loadEntBool(L"InspectEntContStrongbox",  navInspectEntContStrongbox);
-    loadEntBool(L"InspectEntLootWeapon",     navInspectEntLootWeapon);
-    loadEntBool(L"InspectEntLootAmmo",       navInspectEntLootAmmo);
-    loadEntBool(L"InspectEntLootArmor",      navInspectEntLootArmor);
-    loadEntBool(L"InspectEntLootGold",       navInspectEntLootGold);
-    loadEntBool(L"InspectEntLootKey",        navInspectEntLootKey);
-    loadEntBool(L"InspectEntLootPotion",     navInspectEntLootPotion);
-    loadEntBool(L"InspectEntLootFood",       navInspectEntLootFood);
-    loadEntBool(L"InspectEntLootDrink",      navInspectEntLootDrink);
-    loadEntBool(L"InspectEntLootBook",       navInspectEntLootBook);
-    loadEntBool(L"InspectEntLootSoulGem",    navInspectEntLootSoulGem);
-    loadEntBool(L"InspectEntLootScroll",     navInspectEntLootScroll);
-    loadEntBool(L"InspectEntCorpseHumanoid", navInspectEntCorpseHumanoid);
-    loadEntBool(L"InspectEntCorpseCreature", navInspectEntCorpseCreature);
-    loadEntBool(L"InspectEntDoorLoad",       navInspectEntDoorLoad);
-    loadEntBool(L"InspectEntDoorRegular",    navInspectEntDoorRegular);
-    loadEntBool(L"InspectEntIngrLoose",      navInspectEntIngrLoose);
-    loadEntBool(L"InspectEntIngrPlant",      navInspectEntIngrPlant);
-
-    GetPrivateProfileStringW(L"NavigationOverlay", L"GlanceEntityIconSize", std::to_wstring(navGlanceEntityIconSize).c_str(), buffer, 256, path);
-    navGlanceEntityIconSize = std::clamp(_wtoi(buffer), 4, 16);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"InspectEntityIconSize", std::to_wstring(navInspectEntityIconSize).c_str(), buffer, 256, path);
-    navInspectEntityIconSize = std::clamp(_wtoi(buffer), 10, 40);
-
-    GetPrivateProfileStringW(L"NavigationOverlay", L"GlancePinSize", std::to_wstring(navGlancePinSize).c_str(), buffer, 256, path);
-    navGlancePinSize = std::clamp(_wtoi(buffer), 6, 24);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"InspectPinSize", std::to_wstring(navInspectPinSize).c_str(), buffer, 256, path);
-    navInspectPinSize = std::clamp(_wtoi(buffer), 12, 48);
-
-    GetPrivateProfileStringW(L"NavigationOverlay", L"GlanceShowTrail", std::to_wstring(navGlanceShowTrail ? 1 : 0).c_str(), buffer, 256, path);
-    navGlanceShowTrail = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"InspectShowTrail", std::to_wstring(navInspectShowTrail ? 1 : 0).c_str(), buffer, 256, path);
-    navInspectShowTrail = (_wtoi(buffer) != 0);
-
-    GetPrivateProfileStringW(L"NavigationOverlay", L"ActorShowAlly", std::to_wstring(navActorShowAlly ? 1 : 0).c_str(), buffer, 256, path);
-    navActorShowAlly = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"ActorShowHostile", std::to_wstring(navActorShowHostile ? 1 : 0).c_str(), buffer, 256, path);
-    navActorShowHostile = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"ActorShowNeutral", std::to_wstring(navActorShowNeutral ? 1 : 0).c_str(), buffer, 256, path);
-    navActorShowNeutral = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"ActorShowAnimal", std::to_wstring(navActorShowAnimal ? 1 : 0).c_str(), buffer, 256, path);
-    navActorShowAnimal = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"GlanceActorDotSize", std::to_wstring(navGlanceActorDotSize).c_str(), buffer, 256, path);
-    navGlanceActorDotSize = std::clamp(_wtoi(buffer), 2, 16);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"InspectActorDotSize", std::to_wstring(navInspectActorDotSize).c_str(), buffer, 256, path);
-    navInspectActorDotSize = std::clamp(_wtoi(buffer), 3, 24);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"ActorProximityUnits", std::to_wstring(static_cast<int>(navActorProximityUnits)).c_str(), buffer, 256, path);
-    navActorProximityUnits = std::clamp(static_cast<float>(_wtoi(buffer)), 200.0f, 4000.0f);
+    navGlanceInteriorVisible = (ini.GetLongValue("NavigationOverlay", "GlanceInteriorVisible", navGlanceInteriorVisible ? 1L : 0L) != 0);
+    navGlanceExteriorVisible = (ini.GetLongValue("NavigationOverlay", "GlanceExteriorVisible", navGlanceExteriorVisible ? 1L : 0L) != 0);
+    navInspectInteriorVisible = (ini.GetLongValue("NavigationOverlay", "InspectInteriorVisible", navInspectInteriorVisible ? 1L : 0L) != 0);
+    navInspectExteriorVisible = (ini.GetLongValue("NavigationOverlay", "InspectExteriorVisible", navInspectExteriorVisible ? 1L : 0L) != 0);
+    navInspectKey = static_cast<std::int32_t>(ini.GetLongValue("NavigationOverlay", "InspectKeyDIK", navInspectKey));
+    navInspectModifier = static_cast<std::int32_t>(ini.GetLongValue("NavigationOverlay", "InspectModifier", navInspectModifier));
+    navInspectActivation = std::clamp(static_cast<std::int32_t>(ini.GetLongValue("NavigationOverlay", "InspectActivation", navInspectActivation)), 0, 1);
 
     {
-        const int defM = static_cast<int>(navMarkerRange / Settings::kUnitsPerMeter);
-        GetPrivateProfileStringW(L"NavigationOverlay", L"MarkerRange", std::to_wstring(defM).c_str(), buffer, 256, path);
-        const float meters = std::clamp(static_cast<float>(_wtoi(buffer)), 100.0f, 5000.0f);
+        const long gpx = ini.GetLongValue("NavigationOverlay", "GlancePosX", navGlancePosX);
+        if (gpx >= 0) navGlancePosX = static_cast<int>(gpx);
+        const long gpy = ini.GetLongValue("NavigationOverlay", "GlancePosY", navGlancePosY);
+        if (gpy >= 0) navGlancePosY = static_cast<int>(gpy);
+    }
+    // Clamp to the slider range (100-500) so a hand-edited/garbage INI value can't
+    // collapse the Glance disc to zero or blow it up off-screen.
+    navGlanceSize = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlanceSize", navGlanceSize)), 100, 500);
+    navGlanceShape = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlanceShape", navGlanceShape)), 0, 1);
+    navGlanceOrientation = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlanceOrientation", navGlanceOrientation)), 0, 1);
+    navGlanceShowCardinals = (ini.GetLongValue("NavigationOverlay", "GlanceShowCardinals", navGlanceShowCardinals ? 1L : 0L) != 0);
+    navGlanceShowLocation = (ini.GetLongValue("NavigationOverlay", "GlanceShowLocation", navGlanceShowLocation ? 1L : 0L) != 0);
+    navInspectSizePct = static_cast<int>(ini.GetLongValue("NavigationOverlay", "InspectSizePct", navInspectSizePct));
+    navRefreshOnInspect = (ini.GetLongValue("NavigationOverlay", "RefreshOnInspect", navRefreshOnInspect ? 1L : 0L) != 0);
+
+    navInspectModeToggleKey = static_cast<std::int32_t>(ini.GetLongValue("NavigationOverlay", "InspectModeToggleKeyDIK", navInspectModeToggleKey));
+    navInspectModeToggleModifier = static_cast<std::int32_t>(ini.GetLongValue("NavigationOverlay", "InspectModeToggleModifier", navInspectModeToggleModifier));
+    navInspectDefaultMode = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "InspectDefaultMode", navInspectDefaultMode)), 0, 1);
+    navInspectRadarRangeUnits = std::max(static_cast<float>(ini.GetLongValue("NavigationOverlay", "InspectRadarRangeUnits", static_cast<long>(navInspectRadarRangeUnits))), 100.0f);
+    navGlanceRangeUnits = std::max(static_cast<float>(ini.GetLongValue("NavigationOverlay", "GlanceRangeUnits", static_cast<long>(navGlanceRangeUnits))), 200.0f);
+    navQuickMarkKey = static_cast<std::int32_t>(ini.GetLongValue("NavigationOverlay", "QuickMarkKeyDIK", navQuickMarkKey));
+    navQuickMarkModifier = static_cast<std::int32_t>(ini.GetLongValue("NavigationOverlay", "QuickMarkModifier", navQuickMarkModifier));
+    navGlanceToggleKey = static_cast<std::int32_t>(ini.GetLongValue("NavigationOverlay", "GlanceToggleKeyDIK", navGlanceToggleKey));
+    navGlanceToggleModifier = static_cast<std::int32_t>(ini.GetLongValue("NavigationOverlay", "GlanceToggleModifier", navGlanceToggleModifier));
+    lootBeamToggleKey = static_cast<std::int32_t>(ini.GetLongValue("NavigationOverlay", "LootBeamToggleKeyDIK", lootBeamToggleKey));
+    lootBeamToggleModifier = static_cast<std::int32_t>(ini.GetLongValue("NavigationOverlay", "LootBeamToggleModifier", lootBeamToggleModifier));
+
+    const auto loadControllerButton = [&](const char* a_key, std::int32_t a_default) {
+        const auto value = static_cast<std::int32_t>(ini.GetLongValue("Controller", a_key, a_default));
+        return value == -1 || (value >= 266 && value <= 281) ? value : a_default;
+    };
+    controllerInspectOpenButton = loadControllerButton("InspectOpenButton", controllerInspectOpenButton);
+    controllerInspectOpenGesture = std::clamp(static_cast<std::int32_t>(
+        ini.GetLongValue("Controller", "InspectOpenGesture", controllerInspectOpenGesture)), 0, 2);
+    controllerInspectAddMarkerButton = loadControllerButton("InspectAddMarkerButton", controllerInspectAddMarkerButton);
+    controllerInspectSwitchViewButton = loadControllerButton("InspectSwitchViewButton", controllerInspectSwitchViewButton);
+    controllerInspectPathTrackingButton = loadControllerButton("InspectPathTrackingButton", controllerInspectPathTrackingButton);
+
+    // Look & Pin. Own section on purpose -- see the Settings.h comment.
+    lookPinEnabled = (ini.GetLongValue("LookPin", "Enabled", lookPinEnabled ? 1L : 0L) != 0);
+    lookPinKey = static_cast<std::int32_t>(ini.GetLongValue("LookPin", "KeyDIK", lookPinKey));
+    lookPinModifier = static_cast<std::int32_t>(ini.GetLongValue("LookPin", "Modifier", lookPinModifier));
+
+    // Entity subtype filters, FLAT per view (Glance/Inspect), 22 keys each.
+    auto loadEntBool = [&](const char* a_key, bool& a_field) {
+        a_field = (ini.GetLongValue("NavigationOverlay", a_key, a_field ? 1L : 0L) != 0);
+    };
+    loadEntBool("GlanceEntContChest",      navGlanceEntContChest);
+    loadEntBool("GlanceEntContBarrel",     navGlanceEntContBarrel);
+    loadEntBool("GlanceEntContSack",       navGlanceEntContSack);
+    loadEntBool("GlanceEntContUrn",        navGlanceEntContUrn);
+    loadEntBool("GlanceEntContCoffin",     navGlanceEntContCoffin);
+    loadEntBool("GlanceEntContStrongbox",  navGlanceEntContStrongbox);
+    loadEntBool("GlanceEntLootWeapon",     navGlanceEntLootWeapon);
+    loadEntBool("GlanceEntLootAmmo",       navGlanceEntLootAmmo);
+    loadEntBool("GlanceEntLootArmor",      navGlanceEntLootArmor);
+    loadEntBool("GlanceEntLootGold",       navGlanceEntLootGold);
+    loadEntBool("GlanceEntLootKey",        navGlanceEntLootKey);
+    loadEntBool("GlanceEntLootPotion",     navGlanceEntLootPotion);
+    loadEntBool("GlanceEntLootFood",       navGlanceEntLootFood);
+    loadEntBool("GlanceEntLootDrink",      navGlanceEntLootDrink);
+    loadEntBool("GlanceEntLootBook",       navGlanceEntLootBook);
+    loadEntBool("GlanceEntLootSoulGem",    navGlanceEntLootSoulGem);
+    loadEntBool("GlanceEntLootScroll",     navGlanceEntLootScroll);
+    loadEntBool("GlanceEntCorpseHumanoid", navGlanceEntCorpseHumanoid);
+    loadEntBool("GlanceEntCorpseCreature", navGlanceEntCorpseCreature);
+    loadEntBool("GlanceEntDoorLoad",       navGlanceEntDoorLoad);
+    loadEntBool("GlanceEntDoorRegular",    navGlanceEntDoorRegular);
+    loadEntBool("GlanceEntIngrLoose",      navGlanceEntIngrLoose);
+    loadEntBool("GlanceEntIngrPlant",      navGlanceEntIngrPlant);
+
+    loadEntBool("InspectEntContChest",      navInspectEntContChest);
+    loadEntBool("InspectEntContBarrel",     navInspectEntContBarrel);
+    loadEntBool("InspectEntContSack",       navInspectEntContSack);
+    loadEntBool("InspectEntContUrn",        navInspectEntContUrn);
+    loadEntBool("InspectEntContCoffin",     navInspectEntContCoffin);
+    loadEntBool("InspectEntContStrongbox",  navInspectEntContStrongbox);
+    loadEntBool("InspectEntLootWeapon",     navInspectEntLootWeapon);
+    loadEntBool("InspectEntLootAmmo",       navInspectEntLootAmmo);
+    loadEntBool("InspectEntLootArmor",      navInspectEntLootArmor);
+    loadEntBool("InspectEntLootGold",       navInspectEntLootGold);
+    loadEntBool("InspectEntLootKey",        navInspectEntLootKey);
+    loadEntBool("InspectEntLootPotion",     navInspectEntLootPotion);
+    loadEntBool("InspectEntLootFood",       navInspectEntLootFood);
+    loadEntBool("InspectEntLootDrink",      navInspectEntLootDrink);
+    loadEntBool("InspectEntLootBook",       navInspectEntLootBook);
+    loadEntBool("InspectEntLootSoulGem",    navInspectEntLootSoulGem);
+    loadEntBool("InspectEntLootScroll",     navInspectEntLootScroll);
+    loadEntBool("InspectEntCorpseHumanoid", navInspectEntCorpseHumanoid);
+    loadEntBool("InspectEntCorpseCreature", navInspectEntCorpseCreature);
+    loadEntBool("InspectEntDoorLoad",       navInspectEntDoorLoad);
+    loadEntBool("InspectEntDoorRegular",    navInspectEntDoorRegular);
+    loadEntBool("InspectEntIngrLoose",      navInspectEntIngrLoose);
+    loadEntBool("InspectEntIngrPlant",      navInspectEntIngrPlant);
+
+    const auto glanceEntityIconSize = static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlanceEntityIconSize", navGlanceEntityIconSize));
+    // Match both settings sliders so saved sizes survive a restart.
+    navGlanceEntityIconSize = std::clamp(glanceEntityIconSize, 12, 24);
+    logger::debug("GlanceEntityIconSize load: INI={} applied={}", glanceEntityIconSize, navGlanceEntityIconSize);
+    navInspectEntityIconSize = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "InspectEntityIconSize", navInspectEntityIconSize)), 10, 40);
+    ReadColor4Hex(ini, "NavigationOverlay", "EntityIconBackground", nullptr,
+                  navEntityIconBgR, navEntityIconBgG, navEntityIconBgB, navEntityIconBgA);
+    ReadColor4Hex(ini, "NavigationOverlay", "EntityIconBorder", nullptr,
+                  navEntityIconBorderR, navEntityIconBorderG, navEntityIconBorderB, navEntityIconBorderA);
+    navEntityIconPadding = std::clamp(static_cast<float>(ini.GetLongValue(
+        "NavigationOverlay", "EntityIconPadding", static_cast<long>(navEntityIconPadding * 100.0f + 0.5f))) / 100.0f,
+        0.0f, 8.0f);
+
+    navGlancePinSize = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlancePinSize", navGlancePinSize)), 6, 24);
+    navInspectPinSize = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "InspectPinSize", navInspectPinSize)), 12, 48);
+
+    navGlanceShowTrail = (ini.GetLongValue("NavigationOverlay", "GlanceShowTrail", navGlanceShowTrail ? 1L : 0L) != 0);
+    navInspectShowTrail = (ini.GetLongValue("NavigationOverlay", "InspectShowTrail", navInspectShowTrail ? 1L : 0L) != 0);
+
+    navActorShowAlly = (ini.GetLongValue("NavigationOverlay", "ActorShowAlly", navActorShowAlly ? 1L : 0L) != 0);
+    navActorShowHostile = (ini.GetLongValue("NavigationOverlay", "ActorShowHostile", navActorShowHostile ? 1L : 0L) != 0);
+    navActorShowNeutral = (ini.GetLongValue("NavigationOverlay", "ActorShowNeutral", navActorShowNeutral ? 1L : 0L) != 0);
+    navActorShowAnimal = (ini.GetLongValue("NavigationOverlay", "ActorShowAnimal", navActorShowAnimal ? 1L : 0L) != 0);
+    navGlanceActorDotSize = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlanceActorDotSize", navGlanceActorDotSize)), 2, 16);
+    navInspectActorDotSize = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "InspectActorDotSize", navInspectActorDotSize)), 3, 24);
+    navActorProximityUnits = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "ActorProximityUnits", static_cast<long>(navActorProximityUnits))), 200.0f, 4000.0f);
+
+    // MarkerRange is stored in the INI in METERS; navMarkerRange holds units.
+    {
+        const long defM = static_cast<long>(navMarkerRange / Settings::kUnitsPerMeter);
+        const float meters = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "MarkerRange", defM)), 100.0f, 5000.0f);
         navMarkerRange = meters * Settings::kUnitsPerMeter;
     }
-    GetPrivateProfileStringW(L"NavigationOverlay", L"MaxQuestMarkers", std::to_wstring(navMaxQuestMarkers).c_str(), buffer, 256, path);
-    navMaxQuestMarkers = std::clamp(_wtoi(buffer), 0, 10);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"MaxCustomMarkers", std::to_wstring(navMaxCustomMarkers).c_str(), buffer, 256, path);
-    navMaxCustomMarkers = std::clamp(_wtoi(buffer), 0, 30);
+    navMaxQuestMarkers = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "MaxQuestMarkers", navMaxQuestMarkers)), 0, 10);
+    navMaxCustomMarkers = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "MaxCustomMarkers", navMaxCustomMarkers)), 0, 30);
 
-    GetPrivateProfileStringW(L"NavigationOverlay", L"BeaconVisible", std::to_wstring(navBeaconVisible ? 1 : 0).c_str(), buffer, 256, path);
-    navBeaconVisible = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"BeaconPillarHeight", std::to_wstring(static_cast<int>(navBeaconPillarHeight)).c_str(), buffer, 256, path);
-    navBeaconPillarHeight = std::clamp(static_cast<float>(_wtoi(buffer)), 50.0f, 2000.0f);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"BeaconNearScale", X100(navBeaconNearScale).c_str(), buffer, 256, path);
-    navBeaconNearScale = std::clamp(_wtoi(buffer) / 100.0f, 0.05f, 1.0f);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"BeaconPinSize", std::to_wstring(navBeaconPinSize).c_str(), buffer, 256, path);
-    navBeaconPinSize = std::clamp(_wtoi(buffer), 12, 48);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"BeaconFadeNearUnits", std::to_wstring(static_cast<int>(navBeaconFadeNearUnits)).c_str(), buffer, 256, path);
-    navBeaconFadeNearUnits = std::clamp(static_cast<float>(_wtoi(buffer)), 50.0f, 2000.0f);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"BeaconEdgeIndicator", std::to_wstring(navBeaconEdgeIndicator ? 1 : 0).c_str(), buffer, 256, path);
-    navBeaconEdgeIndicator = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamRangeUnits", std::to_wstring(static_cast<int>(lootBeamRangeUnits)).c_str(), buffer, 256, path);
-    lootBeamRangeUnits = std::clamp(static_cast<float>(_wtoi(buffer)), 200.0f, 6000.0f);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamZBandUnits", std::to_wstring(static_cast<int>(lootBeamZBandUnits)).c_str(), buffer, 256, path);
-    lootBeamZBandUnits = std::clamp(static_cast<float>(_wtoi(buffer)), 50.0f, 2000.0f);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamRequireLOS", std::to_wstring(lootBeamRequireLOS ? 1 : 0).c_str(), buffer, 256, path);
-    lootBeamRequireLOS = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamOcclusion", std::to_wstring(lootBeamOcclusion ? 1 : 0).c_str(), buffer, 256, path);
-    lootBeamOcclusion = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"EntityRequireLOS", std::to_wstring(navEntityRequireLOS ? 1 : 0).c_str(), buffer, 256, path);
-    navEntityRequireLOS = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamVisible", std::to_wstring(lootBeamVisible ? 1 : 0).c_str(), buffer, 256, path);
-    lootBeamVisible = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamHideInCombat", std::to_wstring(lootBeamHideInCombat ? 1 : 0).c_str(), buffer, 256, path);
-    lootBeamHideInCombat = (_wtoi(buffer) != 0);
+    navBeaconVisible = (ini.GetLongValue("NavigationOverlay", "BeaconVisible", navBeaconVisible ? 1L : 0L) != 0);
+    navBeaconPillarHeight = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "BeaconPillarHeight", static_cast<long>(navBeaconPillarHeight))), 50.0f, 2000.0f);
+    navBeaconNearScale = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "BeaconNearScale", static_cast<long>(navBeaconNearScale * 100.0f + 0.5f))) / 100.0f, 0.05f, 1.0f);
+    navBeaconPinSize = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "BeaconPinSize", navBeaconPinSize)), 12, 48);
+    navBeaconFadeNearUnits = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "BeaconFadeNearUnits", static_cast<long>(navBeaconFadeNearUnits))), 50.0f, 2000.0f);
+    navBeaconClearOnArrival = (ini.GetLongValue("NavigationOverlay", "BeaconClearOnArrival", navBeaconClearOnArrival ? 1L : 0L) != 0);
+    navBeaconEdgeIndicator = (ini.GetLongValue("NavigationOverlay", "BeaconEdgeIndicator", navBeaconEdgeIndicator ? 1L : 0L) != 0);
+    lootBeamRangeUnits = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "LootBeamRangeUnits", static_cast<long>(lootBeamRangeUnits))), 200.0f, 6000.0f);
+    lootBeamZBandUnits = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "LootBeamZBandUnits", static_cast<long>(lootBeamZBandUnits))), 50.0f, 2000.0f);
+    lootBeamRequireLOS = (ini.GetLongValue("NavigationOverlay", "LootBeamRequireLOS", lootBeamRequireLOS ? 1L : 0L) != 0);
+    lootBeamOcclusion = (ini.GetLongValue("NavigationOverlay", "LootBeamOcclusion", lootBeamOcclusion ? 1L : 0L) != 0);
+    navEntityRequireLOS = (ini.GetLongValue("NavigationOverlay", "EntityRequireLOS", navEntityRequireLOS ? 1L : 0L) != 0);
+    lootBeamVisible = (ini.GetLongValue("NavigationOverlay", "LootBeamVisible", lootBeamVisible ? 1L : 0L) != 0);
+    lootBeamHideInCombat = (ini.GetLongValue("NavigationOverlay", "LootBeamHideInCombat", lootBeamHideInCombat ? 1L : 0L) != 0);
+    lootBeamHideAfterLooting = (ini.GetLongValue("NavigationOverlay", "LootBeamHideAfterLooting", lootBeamHideAfterLooting ? 1L : 0L) != 0);
+    lootBeamHideAfterInspecting = (ini.GetLongValue("NavigationOverlay", "LootBeamHideAfterInspecting", lootBeamHideAfterInspecting ? 1L : 0L) != 0);
+    lootBeamTrackDroppedWeapons = (ini.GetLongValue("NavigationOverlay", "LootBeamTrackDroppedWeapons", lootBeamTrackDroppedWeapons ? 1L : 0L) != 0);
+    lootBeamDesign = std::clamp(static_cast<std::int32_t>(ini.GetLongValue("NavigationOverlay", "LootBeamDesign", lootBeamDesign)), 0, 1);
+    {
+        const float value = static_cast<float>(ini.GetDoubleValue("NavigationOverlay", "LootBeamModernBottomWidth", lootBeamModernBottomWidth));
+        lootBeamModernBottomWidth = std::clamp(std::isfinite(value) ? value : lootBeamModernBottomWidth, 0.0f, 36.0f);
+    }
+    {
+        const float value = static_cast<float>(ini.GetDoubleValue("NavigationOverlay", "LootBeamModernTopWidth", lootBeamModernTopWidth));
+        lootBeamModernTopWidth = std::clamp(std::isfinite(value) ? value : lootBeamModernTopWidth, 0.0f, 36.0f);
+    }
+    {
+        const float value = static_cast<float>(ini.GetDoubleValue("NavigationOverlay", "LootBeamModernGroundGlow", lootBeamModernGroundGlow));
+        if (std::isfinite(value)) lootBeamModernGroundGlow = std::clamp(value, 0.0f, 1.0f);
+    }
+    {
+        const float value = static_cast<float>(ini.GetDoubleValue("NavigationOverlay", "LootBeamWispBottomWidth", lootBeamWispBottomWidth));
+        lootBeamWispBottomWidth = std::clamp(std::isfinite(value) ? value : lootBeamWispBottomWidth, 0.0f, 20.0f);
+    }
+    {
+        const float value = static_cast<float>(ini.GetDoubleValue("NavigationOverlay", "LootBeamWispTopWidth", lootBeamWispTopWidth));
+        lootBeamWispTopWidth = std::clamp(std::isfinite(value) ? value : lootBeamWispTopWidth, 0.0f, 20.0f);
+    }
+    {
+        const float value = static_cast<float>(ini.GetDoubleValue("NavigationOverlay", "LootBeamWispGroundGlow", lootBeamWispGroundGlow));
+        if (std::isfinite(value)) lootBeamWispGroundGlow = std::clamp(value, 0.0f, 1.0f);
+    }
 
-    GetPrivateProfileStringW(L"NavigationOverlay", L"HideInBeastForm", std::to_wstring(hideInBeastForm ? 1 : 0).c_str(), buffer, 256, path);
-    hideInBeastForm = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamHideOwned", std::to_wstring(lootBeamHideOwned ? 1 : 0).c_str(), buffer, 256, path);
-    lootBeamHideOwned = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamLengthUnits", std::to_wstring(static_cast<int>(lootBeamLengthUnits)).c_str(), buffer, 256, path);
-    lootBeamLengthUnits = std::clamp(static_cast<float>(_wtoi(buffer)), 20.0f, 600.0f);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamIconSize", std::to_wstring(lootBeamIconSize).c_str(), buffer, 256, path);
-    lootBeamIconSize = std::clamp(_wtoi(buffer), 10, 48);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamBrightness", std::to_wstring(static_cast<int>(lootBeamBrightness * 100.0f + 0.5f)).c_str(), buffer, 256, path);
-    lootBeamBrightness = std::clamp(static_cast<float>(_wtoi(buffer)) / 100.0f, 0.10f, 1.0f);
+    hideInBeastForm = (ini.GetLongValue("NavigationOverlay", "HideInBeastForm", hideInBeastForm ? 1L : 0L) != 0);
+    lootBeamHideOwned = (ini.GetLongValue("NavigationOverlay", "LootBeamHideOwned", lootBeamHideOwned ? 1L : 0L) != 0);
+    lootBeamLengthUnits = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "LootBeamLengthUnits", static_cast<long>(lootBeamLengthUnits))), 20.0f, 600.0f);
+    lootBeamIconSize = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "LootBeamIconSize", lootBeamIconSize)), 10, 48);
+    lootBeamBrightness = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "LootBeamBrightness", static_cast<long>(lootBeamBrightness * 100.0f + 0.5f))) / 100.0f, 0.10f, 1.0f);
 
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowCorpseHumanoid", std::to_wstring(lootBeamShowCorpseHumanoid ? 1 : 0).c_str(), buffer, 256, path);
-    lootBeamShowCorpseHumanoid = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowCorpseCreature", std::to_wstring(lootBeamShowCorpseCreature ? 1 : 0).c_str(), buffer, 256, path);
-    lootBeamShowCorpseCreature = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowContChest", std::to_wstring(lootBeamShowContChest ? 1 : 0).c_str(), buffer, 256, path);
-    lootBeamShowContChest = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowContStrongbox", std::to_wstring(lootBeamShowContStrongbox ? 1 : 0).c_str(), buffer, 256, path);
-    lootBeamShowContStrongbox = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowContSatchel", std::to_wstring(lootBeamShowContSatchel ? 1 : 0).c_str(), buffer, 256, path);
-    lootBeamShowContSatchel = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowLootWeapon", std::to_wstring(lootBeamShowLootWeapon ? 1 : 0).c_str(), buffer, 256, path);
-    lootBeamShowLootWeapon = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowLootArmor", std::to_wstring(lootBeamShowLootArmor ? 1 : 0).c_str(), buffer, 256, path);
-    lootBeamShowLootArmor = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowLootGold", std::to_wstring(lootBeamShowLootGold ? 1 : 0).c_str(), buffer, 256, path);
-    lootBeamShowLootGold = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowLootPotion", std::to_wstring(lootBeamShowLootPotion ? 1 : 0).c_str(), buffer, 256, path);
-    lootBeamShowLootPotion = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowLootSoulGem", std::to_wstring(lootBeamShowLootSoulGem ? 1 : 0).c_str(), buffer, 256, path);
-    lootBeamShowLootSoulGem = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowLootScroll", std::to_wstring(lootBeamShowLootScroll ? 1 : 0).c_str(), buffer, 256, path);
-    lootBeamShowLootScroll = (_wtoi(buffer) != 0);
+    lootBeamShowCorpseHumanoid = (ini.GetLongValue("NavigationOverlay", "LootBeamShowCorpseHumanoid", lootBeamShowCorpseHumanoid ? 1L : 0L) != 0);
+    lootBeamShowCorpseCreature = (ini.GetLongValue("NavigationOverlay", "LootBeamShowCorpseCreature", lootBeamShowCorpseCreature ? 1L : 0L) != 0);
+    lootBeamShowContChest = (ini.GetLongValue("NavigationOverlay", "LootBeamShowContChest", lootBeamShowContChest ? 1L : 0L) != 0);
+    lootBeamShowContStrongbox = (ini.GetLongValue("NavigationOverlay", "LootBeamShowContStrongbox", lootBeamShowContStrongbox ? 1L : 0L) != 0);
+    lootBeamShowContSatchel = (ini.GetLongValue("NavigationOverlay", "LootBeamShowContSatchel", lootBeamShowContSatchel ? 1L : 0L) != 0);
+    lootBeamShowLootWeapon = (ini.GetLongValue("NavigationOverlay", "LootBeamShowLootWeapon", lootBeamShowLootWeapon ? 1L : 0L) != 0);
+    lootBeamShowLootArmor = (ini.GetLongValue("NavigationOverlay", "LootBeamShowLootArmor", lootBeamShowLootArmor ? 1L : 0L) != 0);
+    lootBeamShowLootGold = (ini.GetLongValue("NavigationOverlay", "LootBeamShowLootGold", lootBeamShowLootGold ? 1L : 0L) != 0);
+    lootBeamShowLootCoinPurse = (ini.GetLongValue("NavigationOverlay", "LootBeamShowLootCoinPurse", lootBeamShowLootCoinPurse ? 1L : 0L) != 0);
+    lootBeamShowLootPotion = (ini.GetLongValue("NavigationOverlay", "LootBeamShowLootPotion", lootBeamShowLootPotion ? 1L : 0L) != 0);
+    lootBeamShowLootSoulGem = (ini.GetLongValue("NavigationOverlay", "LootBeamShowLootSoulGem", lootBeamShowLootSoulGem ? 1L : 0L) != 0);
+    lootBeamShowLootScroll = (ini.GetLongValue("NavigationOverlay", "LootBeamShowLootScroll", lootBeamShowLootScroll ? 1L : 0L) != 0);
+    lootBeamShowLootBook = (ini.GetLongValue("NavigationOverlay", "LootBeamShowLootBook", lootBeamShowLootBook ? 1L : 0L) != 0);
 
-    GetPrivateProfileStringW(L"NavigationOverlay", L"LootBeamMinGoldValue", std::to_wstring(lootBeamMinGoldValue).c_str(), buffer, 256, path);
-    lootBeamMinGoldValue = std::clamp(_wtoi(buffer), 0, 5000);
+    lootBeamMinGoldValue = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "LootBeamMinGoldValue", lootBeamMinGoldValue)), 0, 5000);
 
-    GetPrivateProfileStringW(L"Logging", L"BeaconVerboseLog", std::to_wstring(beaconVerboseLog ? 1 : 0).c_str(), buffer, 256, path);
-    beaconVerboseLog = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"Logging", L"LootBeamPerfLog", std::to_wstring(lootBeamPerfLog ? 1 : 0).c_str(), buffer, 256, path);
-    lootBeamPerfLog = (_wtoi(buffer) != 0);
+    inputVerboseLog = (ini.GetLongValue("Logging", "InputVerboseLog", inputVerboseLog ? 1L : 0L) != 0);
+    cursorVerboseLog = (ini.GetLongValue("Logging", "CursorVerboseLog", cursorVerboseLog ? 1L : 0L) != 0);
+    hudMarkerLog = (ini.GetLongValue("Logging", "HUDMarkerLog", hudMarkerLog ? 1L : 0L) != 0);
+    beaconVerboseLog = (ini.GetLongValue("Logging", "BeaconVerboseLog", beaconVerboseLog ? 1L : 0L) != 0);
+    lootBeamPerfLog = (ini.GetLongValue("Logging", "LootBeamPerfLog", lootBeamPerfLog ? 1L : 0L) != 0);
 
-    GetPrivateProfileStringW(L"Logging", L"QuestRowLog", std::to_wstring(questRowLog ? 1 : 0).c_str(), buffer, 256, path);
-    questRowLog = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"Logging", L"MapStatsLog", std::to_wstring(mapStatsLog ? 1 : 0).c_str(), buffer, 256, path);
-    mapStatsLog = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"Logging", L"MapPinProjectionLog", std::to_wstring(mapPinProjectionLog ? 1 : 0).c_str(), buffer, 256, path);
-    mapPinProjectionLog = (_wtoi(buffer) != 0);
+    questRowLog = (ini.GetLongValue("Logging", "QuestRowLog", questRowLog ? 1L : 0L) != 0);
+    mapStatsLog = (ini.GetLongValue("Logging", "MapStatsLog", mapStatsLog ? 1L : 0L) != 0);
+    mapPinProjectionLog = (ini.GetLongValue("Logging", "MapPinProjectionLog", mapPinProjectionLog ? 1L : 0L) != 0);
+    minimapSnapshotLog = (ini.GetLongValue("Logging", "MinimapSnapshotLog", minimapSnapshotLog ? 1L : 0L) != 0);
 
-    GetPrivateProfileStringW(L"PathTrail", L"Visible", std::to_wstring(pathTrailVisible ? 1 : 0).c_str(), buffer, 256, path);
-    pathTrailVisible = (_wtoi(buffer) != 0);
+    enablePathTracking = (ini.GetLongValue("PathTracking", "Enabled", enablePathTracking ? 1L : 0L) != 0);
 
-    ReadColor4Hex(L"PathTrail", L"Color", L"Color", pathTrailColorR, pathTrailColorG, pathTrailColorB, pathTrailColorA, path);
+    pathTrailVisible = (ini.GetLongValue("PathTrail", "Visible", pathTrailVisible ? 1L : 0L) != 0);
+    ReadColor4Hex(ini, "PathTrail", "Color", "Color", pathTrailColorR, pathTrailColorG, pathTrailColorB, pathTrailColorA);
+    pathTrailThickness = std::clamp(static_cast<float>(ini.GetLongValue("PathTrail", "Thickness", static_cast<long>(pathTrailThickness * 100.0f + 0.5f))) / 100.0f, 1.0f, 8.0f);
+    pathTrailFadeByAge = (ini.GetLongValue("PathTrail", "FadeByAge", pathTrailFadeByAge ? 1L : 0L) != 0);
+    pathTrailSmartSpacing = (ini.GetLongValue("PathTrail", "SmartSpacing", pathTrailSmartSpacing ? 1L : 0L) != 0);
+    pathPulseEnabled = (ini.GetLongValue("PathTrail", "Pulse", pathPulseEnabled ? 1L : 0L) != 0);
+    ReadColor3Hex(ini, "PathTrail", "PulseColor", "PulseColor", pathPulseColorR, pathPulseColorG, pathPulseColorB);
 
-    GetPrivateProfileStringW(L"PathTrail", L"Thickness", X100(pathTrailThickness).c_str(), buffer, 256, path);
-    pathTrailThickness = std::clamp(_wtoi(buffer) / 100.0f, 1.0f, 8.0f);
+    markerIconScale = std::clamp(static_cast<float>(ini.GetLongValue("Markers", "IconScale", static_cast<long>(markerIconScale * 100.0f + 0.5f))) / 100.0f, 0.5f, 2.0f);
+    ReadColor4Hex(ini, "Markers", "PinTint", "PinTint", pinTintR, pinTintG, pinTintB, pinTintA);
+    iconFx3D = (ini.GetLongValue("Markers", "IconFx3D", iconFx3D ? 1L : 0L) != 0);
+    // Older INIs had one switch for both passes. Preserve that choice until
+    // Shadow is saved independently.
+    iconShadow = (ini.GetLongValue("Markers", "IconShadow", iconFx3D ? 1L : 0L) != 0);
+    // Existing INIs inherit their icon-effect choices once. Saving writes
+    // independent entity keys; later changes to Appearance stay map-specific.
+    navEntityIcon3D = (ini.GetLongValue("NavigationOverlay", "EntityIcon3D", iconFx3D ? 1L : 0L) != 0);
+    navEntityIconShadow = (ini.GetLongValue("NavigationOverlay", "EntityIconShadow", iconShadow ? 1L : 0L) != 0);
+    enableBadges = (ini.GetLongValue("Markers", "EnableBadges", enableBadges ? 1L : 0L) != 0);
+    favBadgeSize = std::clamp(static_cast<float>(ini.GetLongValue("Markers", "FavSize", static_cast<long>(favBadgeSize * 100.0f + 0.5f))) / 100.0f, 1.0f, 12.0f);
+    ReadColor4Hex(ini, "Markers", "FavColor", "FavColor", favBadgeColorR, favBadgeColorG, favBadgeColorB, favBadgeColorA);
+    noteBadgeSize = std::clamp(static_cast<float>(ini.GetLongValue("Markers", "NoteSize", static_cast<long>(noteBadgeSize * 100.0f + 0.5f))) / 100.0f, 1.0f, 12.0f);
+    ReadColor4Hex(ini, "Markers", "NoteColor", "NoteColor", noteBadgeColorR, noteBadgeColorG, noteBadgeColorB, noteBadgeColorA);
+    clearedBadgeSize = std::clamp(static_cast<float>(ini.GetLongValue("Markers", "ClearedSize", static_cast<long>(clearedBadgeSize * 100.0f + 0.5f))) / 100.0f, 1.0f, 12.0f);
+    ReadColor4Hex(ini, "Markers", "ClearedColor", "ClearedColor", clearedBadgeColorR, clearedBadgeColorG, clearedBadgeColorB, clearedBadgeColorA);
+    markerImageEnabled = (ini.GetLongValue("Markers", "ImageEnabled", markerImageEnabled ? 1L : 0L) != 0);
+    markerImageWidth = std::clamp(static_cast<float>(ini.GetLongValue("Markers", "ImageWidth", static_cast<long>(markerImageWidth * 100.0f + 0.5f))) / 100.0f, 0.25f, 1.0f);
+    markerImageAlpha = std::clamp(static_cast<float>(ini.GetLongValue("Markers", "ImageAlpha", static_cast<long>(markerImageAlpha * 100.0f + 0.5f))) / 100.0f, 0.0f, 1.0f);
+    markerHoverOffsetX = static_cast<std::int32_t>(ini.GetLongValue("Markers", "HoverOffsetX", markerHoverOffsetX));
+    markerHoverOffsetY = static_cast<std::int32_t>(ini.GetLongValue("Markers", "HoverOffsetY", markerHoverOffsetY));
 
-    GetPrivateProfileStringW(L"PathTrail", L"FadeByAge", std::to_wstring(pathTrailFadeByAge ? 1 : 0).c_str(), buffer, 256, path);
-    pathTrailFadeByAge = (_wtoi(buffer) != 0);
+    ReadColor3Hex(ini, "Appearance", "TitleColor", nullptr, titleColorR, titleColorG, titleColorB);
+    ReadColor3Hex(ini, "Appearance", "BodyColor", nullptr, bodyColorR, bodyColorG, bodyColorB);
+    ReadColor4Hex(ini, "Appearance", "BgColor", nullptr, bgColorR, bgColorG, bgColorB, bgColorA);
+    ReadColor4Hex(ini, "Appearance", "BorderColor", nullptr, borderColorR, borderColorG, borderColorB, borderColorA);
 
-    GetPrivateProfileStringW(L"PathTrail", L"SmartSpacing", std::to_wstring(pathTrailSmartSpacing ? 1 : 0).c_str(), buffer, 256, path);
-    pathTrailSmartSpacing = (_wtoi(buffer) != 0);
-
-    GetPrivateProfileStringW(L"PathTrail", L"Pulse", std::to_wstring(pathPulseEnabled ? 1 : 0).c_str(), buffer, 256, path);
-    pathPulseEnabled = (_wtoi(buffer) != 0);
-
-    ReadColor3Hex(L"PathTrail", L"PulseColor", L"PulseColor", pathPulseColorR, pathPulseColorG, pathPulseColorB, path);
-
-    GetPrivateProfileStringW(L"Markers", L"IconScale", X100(markerIconScale).c_str(), buffer, 256, path);
-    markerIconScale = std::clamp(_wtoi(buffer) / 100.0f, 0.5f, 2.0f);
-
-    ReadColor4Hex(L"Markers", L"PinTint", L"PinTint", pinTintR, pinTintG, pinTintB, pinTintA, path);
-
-    GetPrivateProfileStringW(L"Markers", L"IconFx3D", std::to_wstring(iconFx3D ? 1 : 0).c_str(), buffer, 256, path);
-    iconFx3D = (_wtoi(buffer) != 0);
-
-    GetPrivateProfileStringW(L"Markers", L"FavSize", X100(favBadgeSize).c_str(), buffer, 256, path);
-    favBadgeSize = std::clamp(_wtoi(buffer) / 100.0f, 1.0f, 12.0f);
-
-    ReadColor4Hex(L"Markers", L"FavColor", L"FavColor", favBadgeColorR, favBadgeColorG, favBadgeColorB, favBadgeColorA, path);
-
-    GetPrivateProfileStringW(L"Markers", L"NoteSize", X100(noteBadgeSize).c_str(), buffer, 256, path);
-    noteBadgeSize = std::clamp(_wtoi(buffer) / 100.0f, 1.0f, 12.0f);
-
-    ReadColor4Hex(L"Markers", L"NoteColor", L"NoteColor", noteBadgeColorR, noteBadgeColorG, noteBadgeColorB, noteBadgeColorA, path);
-
-    GetPrivateProfileStringW(L"Markers", L"ClearedSize", X100(clearedBadgeSize).c_str(), buffer, 256, path);
-    clearedBadgeSize = std::clamp(_wtoi(buffer) / 100.0f, 1.0f, 12.0f);
-
-    ReadColor4Hex(L"Markers", L"ClearedColor", L"ClearedColor", clearedBadgeColorR, clearedBadgeColorG, clearedBadgeColorB, clearedBadgeColorA, path);
-
-    GetPrivateProfileStringW(L"Markers", L"ImageEnabled", markerImageEnabled ? L"1" : L"0", buffer, 256, path);
-    markerImageEnabled = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"Markers", L"ImageWidth", X100(markerImageWidth).c_str(), buffer, 256, path);
-    markerImageWidth = std::clamp(_wtoi(buffer) / 100.0f, 0.25f, 1.0f);
-    GetPrivateProfileStringW(L"Markers", L"ImageAlpha", X100(markerImageAlpha).c_str(), buffer, 256, path);
-    markerImageAlpha = std::clamp(_wtoi(buffer) / 100.0f, 0.0f, 1.0f);
-
-    GetPrivateProfileStringW(L"Markers", L"HoverOffsetX", std::to_wstring(markerHoverOffsetX).c_str(), buffer, 256, path);
-    markerHoverOffsetX = _wtoi(buffer);
-    GetPrivateProfileStringW(L"Markers", L"HoverOffsetY", std::to_wstring(markerHoverOffsetY).c_str(), buffer, 256, path);
-    markerHoverOffsetY = _wtoi(buffer);
-
-    ReadColor3Hex(L"Appearance", L"TitleColor", nullptr, titleColorR, titleColorG, titleColorB, path);
-    ReadColor3Hex(L"Appearance", L"BodyColor", nullptr, bodyColorR, bodyColorG, bodyColorB, path);
-    ReadColor4Hex(L"Appearance", L"BgColor", nullptr, bgColorR, bgColorG, bgColorB, bgColorA, path);
-    ReadColor4Hex(L"Appearance", L"BorderColor", nullptr, borderColorR, borderColorG, borderColorB, borderColorA, path);
-
-    GetPrivateProfileStringW(L"Appearance", L"BgShadow", std::to_wstring(bgShadow ? 1 : 0).c_str(), buffer, 256, path);
-    bgShadow = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"Appearance", L"BgGradient", std::to_wstring(bgGradient ? 1 : 0).c_str(), buffer, 256, path);
-    bgGradient = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"Appearance", L"BgVignette", std::to_wstring(bgVignette ? 1 : 0).c_str(), buffer, 256, path);
-    bgVignette = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"Appearance", L"BgHighlight", std::to_wstring(bgHighlight ? 1 : 0).c_str(), buffer, 256, path);
-    bgHighlight = (_wtoi(buffer) != 0);
-    GetPrivateProfileStringW(L"Appearance", L"BgBorder", std::to_wstring(bgBorder ? 1 : 0).c_str(), buffer, 256, path);
-    bgBorder = (_wtoi(buffer) != 0);
+    bgShadow = (ini.GetLongValue("Appearance", "BgShadow", bgShadow ? 1L : 0L) != 0);
+    bgGradient = (ini.GetLongValue("Appearance", "BgGradient", bgGradient ? 1L : 0L) != 0);
+    bgVignette = (ini.GetLongValue("Appearance", "BgVignette", bgVignette ? 1L : 0L) != 0);
+    bgHighlight = (ini.GetLongValue("Appearance", "BgHighlight", bgHighlight ? 1L : 0L) != 0);
+    bgBorder = (ini.GetLongValue("Appearance", "BgBorder", bgBorder ? 1L : 0L) != 0);
 
     logger::info("CustomMarkers.ini loaded:");
     logger::info("  Settings hotkey = {}", InputHandler::FormatHotkeyWithModifier(menuSettingsKey, menuSettingsModifier));
     logger::info("  Language = {}", language);
     logger::info("  Logging Level = {}", logLevel);
-
-    Save();
 }
 
 void Settings::Save() {
     const auto path = GetIniPath();
 
-    WritePrivateProfileStringW(L"Hotkey", L"ListPanelKey", std::to_wstring(listPanelKey).c_str(), path);
-    WritePrivateProfileStringW(L"Hotkey", L"ListPanelModifier", std::to_wstring(listPanelModifier).c_str(), path);
-    WritePrivateProfileStringW(L"Hotkey", L"PathTrackKey", std::to_wstring(pathTrackKey).c_str(), path);
-    WritePrivateProfileStringW(L"Hotkey", L"PathTrackModifier", std::to_wstring(pathTrackModifier).c_str(), path);
+    CSimpleIniA ini;
+    ini.SetUnicode();
+    if (fs::exists(path)) {
+        if (const SI_Error rc = ini.LoadFile(path.c_str()); rc < SI_OK) {
+            logger::error("Refusing to overwrite unreadable CustomMarkers.ini at '{}': SimpleIni error {}",
+                          path.string(), rc);
+            return;
+        }
+    }
 
-    wchar_t langBuf[256];
-    MultiByteToWideChar(CP_UTF8, 0, language.c_str(), -1, langBuf, 256);
-    WritePrivateProfileStringW(L"Localization", L"Language", langBuf, path);
-    WritePrivateProfileStringW(L"Localization", L"FontSize", std::to_wstring(fontSize).c_str(), path);
-    WritePrivateProfileStringW(L"Localization", L"HeadingFontSize", std::to_wstring(headingFontSize).c_str(), path);
+    ini.SetLongValue("Hotkey", "ListPanelKey", listPanelKey);
+    ini.SetLongValue("Hotkey", "ListPanelModifier", listPanelModifier);
+    ini.SetLongValue("Hotkey", "PathTrackKey", pathTrackKey);
+    ini.SetLongValue("Hotkey", "PathTrackModifier", pathTrackModifier);
 
-    wchar_t levelBuf[64];
-    MultiByteToWideChar(CP_UTF8, 0, logLevel.c_str(), -1, levelBuf, 64);
-    WritePrivateProfileStringW(L"Logging", L"Level", levelBuf, path);
-    WritePrivateProfileStringW(L"Logging", L"BeaconVerboseLog", std::to_wstring(beaconVerboseLog ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"Logging", L"LootBeamPerfLog", std::to_wstring(lootBeamPerfLog ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"Logging", L"QuestRowLog", std::to_wstring(questRowLog ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"Logging", L"MapStatsLog", std::to_wstring(mapStatsLog ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"Logging", L"MapPinProjectionLog", std::to_wstring(mapPinProjectionLog ? 1 : 0).c_str(), path);
+    ini.SetValue("Localization", "Language", language.c_str());
+    ini.SetLongValue("Localization", "FontSize", fontSize);
+    ini.SetLongValue("Localization", "HeadingFontSize", headingFontSize);
 
-    WritePrivateProfileStringW(L"Menu", L"SettingsKey", std::to_wstring(menuSettingsKey).c_str(), path);
-    WritePrivateProfileStringW(L"Menu", L"SettingsModifier", std::to_wstring(menuSettingsModifier).c_str(), path);
-    WritePrivateProfileStringW(L"Menu", L"ActiveTab", std::to_wstring(menuActiveTab).c_str(), path);
-    WritePrivateProfileStringW(L"Menu", L"PosX", std::to_wstring(menuPosX).c_str(), path);
-    WritePrivateProfileStringW(L"Menu", L"PosY", std::to_wstring(menuPosY).c_str(), path);
-    WritePrivateProfileStringW(L"Menu", L"Width", std::to_wstring(menuWidth).c_str(), path);
-    WritePrivateProfileStringW(L"Menu", L"Height", std::to_wstring(menuHeight).c_str(), path);
+    ini.SetValue("Logging", "Level", logLevel.c_str());
+    ini.SetLongValue("Logging", "InputVerboseLog", inputVerboseLog ? 1L : 0L);
+    ini.SetLongValue("Logging", "CursorVerboseLog", cursorVerboseLog ? 1L : 0L);
+    ini.SetLongValue("Logging", "HUDMarkerLog", hudMarkerLog ? 1L : 0L);
+    ini.SetLongValue("Logging", "BeaconVerboseLog", beaconVerboseLog ? 1L : 0L);
+    ini.SetLongValue("Logging", "LootBeamPerfLog", lootBeamPerfLog ? 1L : 0L);
+    ini.SetLongValue("Logging", "QuestRowLog", questRowLog ? 1L : 0L);
+    ini.SetLongValue("Logging", "MapStatsLog", mapStatsLog ? 1L : 0L);
+    ini.SetLongValue("Logging", "MapPinProjectionLog", mapPinProjectionLog ? 1L : 0L);
+    ini.SetLongValue("Logging", "MinimapSnapshotLog", minimapSnapshotLog ? 1L : 0L);
 
-    WritePrivateProfileStringW(L"ListPanel", L"Width", std::to_wstring(listPanelWidth).c_str(), path);
-    WritePrivateProfileStringW(L"ListPanel", L"ShowOverview", std::to_wstring(listShowOverview ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"ListPanel", L"ShowActiveQuests", std::to_wstring(listShowActiveQuests ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"ListPanel", L"ActiveTab", std::to_wstring(listActiveTab).c_str(), path);
-    WritePrivateProfileStringW(L"ListPanel", L"MinHeightPct", std::to_wstring(listPanelMinHeightPct).c_str(), path);
-    WritePrivateProfileStringW(L"ListPanel", L"MaxHeightPct", std::to_wstring(listPanelMaxHeightPct).c_str(), path);
-    WritePrivateProfileStringW(L"ListPanel", L"UseCustomBg", std::to_wstring(listPanelUseCustomBg ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"ListPanel", L"BgIndex", std::to_wstring(listPanelBgIndex).c_str(), path);
-    WritePrivateProfileStringW(L"Appearance", L"TitleScale", std::to_wstring(static_cast<int>(titleScale * 100.0f + 0.5f)).c_str(), path);
-    WritePrivateProfileStringW(L"Appearance", L"BodyScale", std::to_wstring(static_cast<int>(bodyScale * 100.0f + 0.5f)).c_str(), path);
+    ini.SetLongValue("Menu", "SettingsKey", menuSettingsKey);
+    ini.SetLongValue("Menu", "SettingsModifier", menuSettingsModifier);
+    ini.SetLongValue("Menu", "ActiveTab", menuActiveTab);
+    ini.SetLongValue("Menu", "PosX", menuPosX);
+    ini.SetLongValue("Menu", "PosY", menuPosY);
+    ini.SetLongValue("Menu", "Width", menuWidth);
+    ini.SetLongValue("Menu", "Height", menuHeight);
 
-    WritePrivateProfileStringW(L"Filters", L"Show", std::to_wstring(showFilterPanel ? 1 : 0).c_str(), path);
+    ini.SetLongValue("ListPanel", "Width", listPanelWidth);
+    ini.SetLongValue("ListPanel", "Visible", listPanelVisible ? 1L : 0L);
+    ini.SetLongValue("ListPanel", "ShowOverview", listShowOverview ? 1L : 0L);
+    ini.SetLongValue("ListPanel", "ShowActiveQuests", listShowActiveQuests ? 1L : 0L);
+    ini.SetLongValue("ListPanel", "ActiveTab", listActiveTab);
+    ini.SetLongValue("ListPanel", "PosX", listPanelPosX);
+    ini.SetLongValue("ListPanel", "PosY", listPanelPosY);
+    ini.SetLongValue("ListPanel", "MinHeightPct", listPanelMinHeightPct);
+    ini.SetLongValue("ListPanel", "MaxHeightPct", listPanelMaxHeightPct);
+    ini.SetLongValue("ListPanel", "UseCustomBg", listPanelUseCustomBg ? 1L : 0L);
+    ini.SetLongValue("ListPanel", "BgIndex", listPanelBgIndex);
+    ini.SetLongValue("Appearance", "InterfaceScale", interfaceScale);
+    ini.SetLongValue("Appearance", "TitleScale", static_cast<long>(titleScale * 100.0f + 0.5f));
+    ini.SetLongValue("Appearance", "BodyScale", static_cast<long>(bodyScale * 100.0f + 0.5f));
 
-    WritePrivateProfileStringW(L"StatCard", L"NoteScale", std::to_wstring(static_cast<int>(noteTextScale * 100.0f + 0.5f)).c_str(), path);
-    WritePrivateProfileStringW(L"StatCard", L"Anchor", std::to_wstring(statCardAnchor).c_str(), path);
-    WritePrivateProfileStringW(L"StatCard", L"OffsetX", std::to_wstring(statCardOffsetX).c_str(), path);
-    WritePrivateProfileStringW(L"StatCard", L"OffsetY", std::to_wstring(statCardOffsetY).c_str(), path);
+    ini.SetLongValue("Filters", "Show", showFilterPanel ? 1L : 0L);
+    ini.SetLongValue("Filters", "PosX", filterPosX);
+    ini.SetLongValue("Filters", "PosY", filterPosY);
+    ini.SetLongValue("Filters", "Collapsed", filterCollapsed ? 1L : 0L);
 
-    WritePrivateProfileStringW(L"NavigationOverlay", L"GlanceInteriorVisible", std::to_wstring(navGlanceInteriorVisible ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"GlanceExteriorVisible", std::to_wstring(navGlanceExteriorVisible ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"InspectInteriorVisible", std::to_wstring(navInspectInteriorVisible ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"InspectExteriorVisible", std::to_wstring(navInspectExteriorVisible ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"InspectKeyDIK", std::to_wstring(navInspectKey).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"InspectModifier", std::to_wstring(navInspectModifier).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"GlancePosX", std::to_wstring(navGlancePosX).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"GlancePosY", std::to_wstring(navGlancePosY).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"GlanceSize", std::to_wstring(navGlanceSize).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"InspectSizePct", std::to_wstring(navInspectSizePct).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"RefreshOnInspect", std::to_wstring(navRefreshOnInspect ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"InspectModeToggleKeyDIK", std::to_wstring(navInspectModeToggleKey).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"InspectModeToggleModifier", std::to_wstring(navInspectModeToggleModifier).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"InspectDefaultMode", std::to_wstring(navInspectDefaultMode).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"InspectRadarRangeUnits", std::to_wstring(static_cast<int>(navInspectRadarRangeUnits)).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"GlanceRangeUnits", std::to_wstring(static_cast<int>(navGlanceRangeUnits)).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"QuickMarkKeyDIK", std::to_wstring(navQuickMarkKey).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"QuickMarkModifier", std::to_wstring(navQuickMarkModifier).c_str(), path);
+    ini.SetLongValue("StatCard", "NoteScale", static_cast<long>(noteTextScale * 100.0f + 0.5f));
+    ini.SetLongValue("StatCard", "Anchor", statCardAnchor);
+    ini.SetLongValue("StatCard", "OffsetX", statCardOffsetX);
+    ini.SetLongValue("StatCard", "OffsetY", statCardOffsetY);
+    ini.SetLongValue("StatCard", "ShowDetails", statCardShowDetails ? 1L : 0L);
 
-    WritePrivateProfileStringW(L"LookPin", L"Enabled", std::to_wstring(lookPinEnabled ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"LookPin", L"KeyDIK", std::to_wstring(lookPinKey).c_str(), path);
-    WritePrivateProfileStringW(L"LookPin", L"Modifier", std::to_wstring(lookPinModifier).c_str(), path);
+    ini.SetLongValue("NavigationOverlay", "GlanceInteriorVisible", navGlanceInteriorVisible ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "GlanceExteriorVisible", navGlanceExteriorVisible ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "InspectInteriorVisible", navInspectInteriorVisible ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "InspectExteriorVisible", navInspectExteriorVisible ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "InspectKeyDIK", navInspectKey);
+    ini.SetLongValue("NavigationOverlay", "InspectModifier", navInspectModifier);
+    ini.SetLongValue("NavigationOverlay", "InspectActivation", navInspectActivation);
+    ini.SetLongValue("NavigationOverlay", "GlancePosX", navGlancePosX);
+    ini.SetLongValue("NavigationOverlay", "GlancePosY", navGlancePosY);
+    ini.SetLongValue("NavigationOverlay", "GlanceSize", navGlanceSize);
+    ini.SetLongValue("NavigationOverlay", "GlanceShape", navGlanceShape);
+    ini.SetLongValue("NavigationOverlay", "GlanceOrientation", navGlanceOrientation);
+    ini.SetLongValue("NavigationOverlay", "GlanceShowCardinals", navGlanceShowCardinals ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "GlanceShowLocation", navGlanceShowLocation ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "InspectSizePct", navInspectSizePct);
+    ini.SetLongValue("NavigationOverlay", "RefreshOnInspect", navRefreshOnInspect ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "InspectModeToggleKeyDIK", navInspectModeToggleKey);
+    ini.SetLongValue("NavigationOverlay", "InspectModeToggleModifier", navInspectModeToggleModifier);
+    ini.SetLongValue("NavigationOverlay", "InspectDefaultMode", navInspectDefaultMode);
+    ini.SetLongValue("NavigationOverlay", "InspectRadarRangeUnits", static_cast<long>(navInspectRadarRangeUnits));
+    ini.SetLongValue("NavigationOverlay", "GlanceRangeUnits", static_cast<long>(navGlanceRangeUnits));
+    ini.SetLongValue("NavigationOverlay", "QuickMarkKeyDIK", navQuickMarkKey);
+    ini.SetLongValue("NavigationOverlay", "QuickMarkModifier", navQuickMarkModifier);
+    ini.SetLongValue("NavigationOverlay", "GlanceToggleKeyDIK", navGlanceToggleKey);
+    ini.SetLongValue("NavigationOverlay", "GlanceToggleModifier", navGlanceToggleModifier);
+    ini.SetLongValue("NavigationOverlay", "LootBeamToggleKeyDIK", lootBeamToggleKey);
+    ini.SetLongValue("NavigationOverlay", "LootBeamToggleModifier", lootBeamToggleModifier);
 
-    auto saveEntBool = [&](const wchar_t* a_key, bool a_field) {
-        WritePrivateProfileStringW(L"NavigationOverlay", a_key, std::to_wstring(a_field ? 1 : 0).c_str(), path);
+    ini.SetLongValue("Controller", "InspectOpenButton", controllerInspectOpenButton);
+    ini.SetLongValue("Controller", "InspectOpenGesture", controllerInspectOpenGesture);
+    ini.SetLongValue("Controller", "InspectAddMarkerButton", controllerInspectAddMarkerButton);
+    ini.SetLongValue("Controller", "InspectSwitchViewButton", controllerInspectSwitchViewButton);
+    ini.SetLongValue("Controller", "InspectPathTrackingButton", controllerInspectPathTrackingButton);
+
+    // Look & Pin, own [LookPin] section -- mirrors the Load() block above.
+    ini.SetLongValue("LookPin", "Enabled", lookPinEnabled ? 1L : 0L);
+    ini.SetLongValue("LookPin", "KeyDIK", lookPinKey);
+    ini.SetLongValue("LookPin", "Modifier", lookPinModifier);
+
+    // Entity subtype filters, FLAT per view.
+    auto saveEntBool = [&](const char* a_key, bool a_field) {
+        ini.SetLongValue("NavigationOverlay", a_key, a_field ? 1L : 0L);
     };
-    saveEntBool(L"GlanceEntContChest",      navGlanceEntContChest);
-    saveEntBool(L"GlanceEntContBarrel",     navGlanceEntContBarrel);
-    saveEntBool(L"GlanceEntContSack",       navGlanceEntContSack);
-    saveEntBool(L"GlanceEntContUrn",        navGlanceEntContUrn);
-    saveEntBool(L"GlanceEntContCoffin",     navGlanceEntContCoffin);
-    saveEntBool(L"GlanceEntContStrongbox",  navGlanceEntContStrongbox);
-    saveEntBool(L"GlanceEntLootWeapon",     navGlanceEntLootWeapon);
-    saveEntBool(L"GlanceEntLootAmmo",       navGlanceEntLootAmmo);
-    saveEntBool(L"GlanceEntLootArmor",      navGlanceEntLootArmor);
-    saveEntBool(L"GlanceEntLootGold",       navGlanceEntLootGold);
-    saveEntBool(L"GlanceEntLootKey",        navGlanceEntLootKey);
-    saveEntBool(L"GlanceEntLootPotion",     navGlanceEntLootPotion);
-    saveEntBool(L"GlanceEntLootFood",       navGlanceEntLootFood);
-    saveEntBool(L"GlanceEntLootDrink",      navGlanceEntLootDrink);
-    saveEntBool(L"GlanceEntLootBook",       navGlanceEntLootBook);
-    saveEntBool(L"GlanceEntLootSoulGem",    navGlanceEntLootSoulGem);
-    saveEntBool(L"GlanceEntLootScroll",     navGlanceEntLootScroll);
-    saveEntBool(L"GlanceEntCorpseHumanoid", navGlanceEntCorpseHumanoid);
-    saveEntBool(L"GlanceEntCorpseCreature", navGlanceEntCorpseCreature);
-    saveEntBool(L"GlanceEntDoorLoad",       navGlanceEntDoorLoad);
-    saveEntBool(L"GlanceEntDoorRegular",    navGlanceEntDoorRegular);
-    saveEntBool(L"GlanceEntIngrLoose",      navGlanceEntIngrLoose);
-    saveEntBool(L"GlanceEntIngrPlant",      navGlanceEntIngrPlant);
+    saveEntBool("GlanceEntContChest",      navGlanceEntContChest);
+    saveEntBool("GlanceEntContBarrel",     navGlanceEntContBarrel);
+    saveEntBool("GlanceEntContSack",       navGlanceEntContSack);
+    saveEntBool("GlanceEntContUrn",        navGlanceEntContUrn);
+    saveEntBool("GlanceEntContCoffin",     navGlanceEntContCoffin);
+    saveEntBool("GlanceEntContStrongbox",  navGlanceEntContStrongbox);
+    saveEntBool("GlanceEntLootWeapon",     navGlanceEntLootWeapon);
+    saveEntBool("GlanceEntLootAmmo",       navGlanceEntLootAmmo);
+    saveEntBool("GlanceEntLootArmor",      navGlanceEntLootArmor);
+    saveEntBool("GlanceEntLootGold",       navGlanceEntLootGold);
+    saveEntBool("GlanceEntLootKey",        navGlanceEntLootKey);
+    saveEntBool("GlanceEntLootPotion",     navGlanceEntLootPotion);
+    saveEntBool("GlanceEntLootFood",       navGlanceEntLootFood);
+    saveEntBool("GlanceEntLootDrink",      navGlanceEntLootDrink);
+    saveEntBool("GlanceEntLootBook",       navGlanceEntLootBook);
+    saveEntBool("GlanceEntLootSoulGem",    navGlanceEntLootSoulGem);
+    saveEntBool("GlanceEntLootScroll",     navGlanceEntLootScroll);
+    saveEntBool("GlanceEntCorpseHumanoid", navGlanceEntCorpseHumanoid);
+    saveEntBool("GlanceEntCorpseCreature", navGlanceEntCorpseCreature);
+    saveEntBool("GlanceEntDoorLoad",       navGlanceEntDoorLoad);
+    saveEntBool("GlanceEntDoorRegular",    navGlanceEntDoorRegular);
+    saveEntBool("GlanceEntIngrLoose",      navGlanceEntIngrLoose);
+    saveEntBool("GlanceEntIngrPlant",      navGlanceEntIngrPlant);
 
-    saveEntBool(L"InspectEntContChest",      navInspectEntContChest);
-    saveEntBool(L"InspectEntContBarrel",     navInspectEntContBarrel);
-    saveEntBool(L"InspectEntContSack",       navInspectEntContSack);
-    saveEntBool(L"InspectEntContUrn",        navInspectEntContUrn);
-    saveEntBool(L"InspectEntContCoffin",     navInspectEntContCoffin);
-    saveEntBool(L"InspectEntContStrongbox",  navInspectEntContStrongbox);
-    saveEntBool(L"InspectEntLootWeapon",     navInspectEntLootWeapon);
-    saveEntBool(L"InspectEntLootAmmo",       navInspectEntLootAmmo);
-    saveEntBool(L"InspectEntLootArmor",      navInspectEntLootArmor);
-    saveEntBool(L"InspectEntLootGold",       navInspectEntLootGold);
-    saveEntBool(L"InspectEntLootKey",        navInspectEntLootKey);
-    saveEntBool(L"InspectEntLootPotion",     navInspectEntLootPotion);
-    saveEntBool(L"InspectEntLootFood",       navInspectEntLootFood);
-    saveEntBool(L"InspectEntLootDrink",      navInspectEntLootDrink);
-    saveEntBool(L"InspectEntLootBook",       navInspectEntLootBook);
-    saveEntBool(L"InspectEntLootSoulGem",    navInspectEntLootSoulGem);
-    saveEntBool(L"InspectEntLootScroll",     navInspectEntLootScroll);
-    saveEntBool(L"InspectEntCorpseHumanoid", navInspectEntCorpseHumanoid);
-    saveEntBool(L"InspectEntCorpseCreature", navInspectEntCorpseCreature);
-    saveEntBool(L"InspectEntDoorLoad",       navInspectEntDoorLoad);
-    saveEntBool(L"InspectEntDoorRegular",    navInspectEntDoorRegular);
-    saveEntBool(L"InspectEntIngrLoose",      navInspectEntIngrLoose);
-    saveEntBool(L"InspectEntIngrPlant",      navInspectEntIngrPlant);
+    saveEntBool("InspectEntContChest",      navInspectEntContChest);
+    saveEntBool("InspectEntContBarrel",     navInspectEntContBarrel);
+    saveEntBool("InspectEntContSack",       navInspectEntContSack);
+    saveEntBool("InspectEntContUrn",        navInspectEntContUrn);
+    saveEntBool("InspectEntContCoffin",     navInspectEntContCoffin);
+    saveEntBool("InspectEntContStrongbox",  navInspectEntContStrongbox);
+    saveEntBool("InspectEntLootWeapon",     navInspectEntLootWeapon);
+    saveEntBool("InspectEntLootAmmo",       navInspectEntLootAmmo);
+    saveEntBool("InspectEntLootArmor",      navInspectEntLootArmor);
+    saveEntBool("InspectEntLootGold",       navInspectEntLootGold);
+    saveEntBool("InspectEntLootKey",        navInspectEntLootKey);
+    saveEntBool("InspectEntLootPotion",     navInspectEntLootPotion);
+    saveEntBool("InspectEntLootFood",       navInspectEntLootFood);
+    saveEntBool("InspectEntLootDrink",      navInspectEntLootDrink);
+    saveEntBool("InspectEntLootBook",       navInspectEntLootBook);
+    saveEntBool("InspectEntLootSoulGem",    navInspectEntLootSoulGem);
+    saveEntBool("InspectEntLootScroll",     navInspectEntLootScroll);
+    saveEntBool("InspectEntCorpseHumanoid", navInspectEntCorpseHumanoid);
+    saveEntBool("InspectEntCorpseCreature", navInspectEntCorpseCreature);
+    saveEntBool("InspectEntDoorLoad",       navInspectEntDoorLoad);
+    saveEntBool("InspectEntDoorRegular",    navInspectEntDoorRegular);
+    saveEntBool("InspectEntIngrLoose",      navInspectEntIngrLoose);
+    saveEntBool("InspectEntIngrPlant",      navInspectEntIngrPlant);
 
-    WritePrivateProfileStringW(L"NavigationOverlay", L"GlanceEntityIconSize", std::to_wstring(navGlanceEntityIconSize).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"InspectEntityIconSize", std::to_wstring(navInspectEntityIconSize).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"GlancePinSize", std::to_wstring(navGlancePinSize).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"InspectPinSize", std::to_wstring(navInspectPinSize).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"GlanceShowTrail", std::to_wstring(navGlanceShowTrail ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"InspectShowTrail", std::to_wstring(navInspectShowTrail ? 1 : 0).c_str(), path);
+    ini.SetLongValue("NavigationOverlay", "GlanceEntityIconSize", navGlanceEntityIconSize);
+    ini.SetLongValue("NavigationOverlay", "InspectEntityIconSize", navInspectEntityIconSize);
+    WriteColor4Hex(ini, "NavigationOverlay", "EntityIconBackground",
+                   navEntityIconBgR, navEntityIconBgG, navEntityIconBgB, navEntityIconBgA);
+    WriteColor4Hex(ini, "NavigationOverlay", "EntityIconBorder",
+                   navEntityIconBorderR, navEntityIconBorderG, navEntityIconBorderB, navEntityIconBorderA);
+    ini.SetLongValue("NavigationOverlay", "EntityIconPadding", static_cast<long>(navEntityIconPadding * 100.0f + 0.5f));
+    ini.SetLongValue("NavigationOverlay", "EntityIcon3D", navEntityIcon3D ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "EntityIconShadow", navEntityIconShadow ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "GlancePinSize", navGlancePinSize);
+    ini.SetLongValue("NavigationOverlay", "InspectPinSize", navInspectPinSize);
+    ini.SetLongValue("NavigationOverlay", "GlanceShowTrail", navGlanceShowTrail ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "InspectShowTrail", navInspectShowTrail ? 1L : 0L);
 
-    WritePrivateProfileStringW(L"NavigationOverlay", L"ActorShowAlly", std::to_wstring(navActorShowAlly ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"ActorShowHostile", std::to_wstring(navActorShowHostile ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"ActorShowNeutral", std::to_wstring(navActorShowNeutral ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"ActorShowAnimal", std::to_wstring(navActorShowAnimal ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"GlanceActorDotSize", std::to_wstring(navGlanceActorDotSize).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"InspectActorDotSize", std::to_wstring(navInspectActorDotSize).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"ActorProximityUnits", std::to_wstring(static_cast<int>(navActorProximityUnits)).c_str(), path);
+    ini.SetLongValue("NavigationOverlay", "ActorShowAlly", navActorShowAlly ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "ActorShowHostile", navActorShowHostile ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "ActorShowNeutral", navActorShowNeutral ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "ActorShowAnimal", navActorShowAnimal ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "GlanceActorDotSize", navGlanceActorDotSize);
+    ini.SetLongValue("NavigationOverlay", "InspectActorDotSize", navInspectActorDotSize);
+    ini.SetLongValue("NavigationOverlay", "ActorProximityUnits", static_cast<long>(navActorProximityUnits));
 
-    WritePrivateProfileStringW(L"NavigationOverlay", L"MarkerRange", std::to_wstring(static_cast<int>(navMarkerRange / Settings::kUnitsPerMeter)).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"MaxQuestMarkers", std::to_wstring(navMaxQuestMarkers).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"MaxCustomMarkers", std::to_wstring(navMaxCustomMarkers).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"BeaconVisible", std::to_wstring(navBeaconVisible ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"BeaconPillarHeight", std::to_wstring(static_cast<int>(navBeaconPillarHeight)).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"BeaconNearScale", std::to_wstring(static_cast<int>(navBeaconNearScale * 100.0f + 0.5f)).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"BeaconPinSize", std::to_wstring(navBeaconPinSize).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"BeaconFadeNearUnits", std::to_wstring(static_cast<int>(navBeaconFadeNearUnits)).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"BeaconEdgeIndicator", std::to_wstring(navBeaconEdgeIndicator ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamRangeUnits", std::to_wstring(static_cast<int>(lootBeamRangeUnits)).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamZBandUnits", std::to_wstring(static_cast<int>(lootBeamZBandUnits)).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamRequireLOS", std::to_wstring(lootBeamRequireLOS ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamOcclusion", std::to_wstring(lootBeamOcclusion ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"EntityRequireLOS", std::to_wstring(navEntityRequireLOS ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamVisible", std::to_wstring(lootBeamVisible ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamHideInCombat", std::to_wstring(lootBeamHideInCombat ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"HideInBeastForm", std::to_wstring(hideInBeastForm ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamHideOwned", std::to_wstring(lootBeamHideOwned ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamLengthUnits", std::to_wstring(static_cast<int>(lootBeamLengthUnits)).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamIconSize", std::to_wstring(lootBeamIconSize).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamBrightness", std::to_wstring(static_cast<int>(lootBeamBrightness * 100.0f + 0.5f)).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowCorpseHumanoid", std::to_wstring(lootBeamShowCorpseHumanoid ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowCorpseCreature", std::to_wstring(lootBeamShowCorpseCreature ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowContChest", std::to_wstring(lootBeamShowContChest ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowContStrongbox", std::to_wstring(lootBeamShowContStrongbox ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowContSatchel", std::to_wstring(lootBeamShowContSatchel ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowLootWeapon", std::to_wstring(lootBeamShowLootWeapon ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowLootArmor", std::to_wstring(lootBeamShowLootArmor ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowLootGold", std::to_wstring(lootBeamShowLootGold ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowLootPotion", std::to_wstring(lootBeamShowLootPotion ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowLootSoulGem", std::to_wstring(lootBeamShowLootSoulGem ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamShowLootScroll", std::to_wstring(lootBeamShowLootScroll ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"NavigationOverlay", L"LootBeamMinGoldValue", std::to_wstring(lootBeamMinGoldValue).c_str(), path);
+    // Written in METERS (navMarkerRange is units internally).
+    ini.SetLongValue("NavigationOverlay", "MarkerRange", static_cast<long>(navMarkerRange / Settings::kUnitsPerMeter));
+    ini.SetLongValue("NavigationOverlay", "MaxQuestMarkers", navMaxQuestMarkers);
+    ini.SetLongValue("NavigationOverlay", "MaxCustomMarkers", navMaxCustomMarkers);
+    ini.SetLongValue("NavigationOverlay", "BeaconVisible", navBeaconVisible ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "BeaconPillarHeight", static_cast<long>(navBeaconPillarHeight));
+    ini.SetLongValue("NavigationOverlay", "BeaconNearScale", static_cast<long>(navBeaconNearScale * 100.0f + 0.5f));
+    ini.SetLongValue("NavigationOverlay", "BeaconPinSize", navBeaconPinSize);
+    ini.SetLongValue("NavigationOverlay", "BeaconFadeNearUnits", static_cast<long>(navBeaconFadeNearUnits));
+    ini.SetLongValue("NavigationOverlay", "BeaconClearOnArrival", navBeaconClearOnArrival ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "BeaconEdgeIndicator", navBeaconEdgeIndicator ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamRangeUnits", static_cast<long>(lootBeamRangeUnits));
+    ini.SetLongValue("NavigationOverlay", "LootBeamZBandUnits", static_cast<long>(lootBeamZBandUnits));
+    ini.SetLongValue("NavigationOverlay", "LootBeamRequireLOS", lootBeamRequireLOS ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamOcclusion", lootBeamOcclusion ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "EntityRequireLOS", navEntityRequireLOS ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamVisible", lootBeamVisible ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamHideInCombat", lootBeamHideInCombat ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamHideAfterLooting", lootBeamHideAfterLooting ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamHideAfterInspecting", lootBeamHideAfterInspecting ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamTrackDroppedWeapons", lootBeamTrackDroppedWeapons ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamDesign", lootBeamDesign);
+    ini.SetDoubleValue("NavigationOverlay", "LootBeamModernBottomWidth", lootBeamModernBottomWidth);
+    ini.SetDoubleValue("NavigationOverlay", "LootBeamModernTopWidth", lootBeamModernTopWidth);
+    ini.SetDoubleValue("NavigationOverlay", "LootBeamModernGroundGlow", lootBeamModernGroundGlow);
+    ini.SetDoubleValue("NavigationOverlay", "LootBeamWispBottomWidth", lootBeamWispBottomWidth);
+    ini.SetDoubleValue("NavigationOverlay", "LootBeamWispTopWidth", lootBeamWispTopWidth);
+    ini.SetDoubleValue("NavigationOverlay", "LootBeamWispGroundGlow", lootBeamWispGroundGlow);
+    ini.SetLongValue("NavigationOverlay", "HideInBeastForm", hideInBeastForm ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamHideOwned", lootBeamHideOwned ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamLengthUnits", static_cast<long>(lootBeamLengthUnits));
+    ini.SetLongValue("NavigationOverlay", "LootBeamIconSize", lootBeamIconSize);
+    ini.SetLongValue("NavigationOverlay", "LootBeamBrightness", static_cast<long>(lootBeamBrightness * 100.0f + 0.5f));
+    ini.SetLongValue("NavigationOverlay", "LootBeamShowCorpseHumanoid", lootBeamShowCorpseHumanoid ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamShowCorpseCreature", lootBeamShowCorpseCreature ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamShowContChest", lootBeamShowContChest ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamShowContStrongbox", lootBeamShowContStrongbox ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamShowContSatchel", lootBeamShowContSatchel ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamShowLootWeapon", lootBeamShowLootWeapon ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamShowLootArmor", lootBeamShowLootArmor ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamShowLootGold", lootBeamShowLootGold ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamShowLootCoinPurse", lootBeamShowLootCoinPurse ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamShowLootPotion", lootBeamShowLootPotion ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamShowLootSoulGem", lootBeamShowLootSoulGem ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamShowLootScroll", lootBeamShowLootScroll ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamShowLootBook", lootBeamShowLootBook ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamMinGoldValue", lootBeamMinGoldValue);
 
-    WritePrivateProfileStringW(L"PathTrail", L"Visible", std::to_wstring(pathTrailVisible ? 1 : 0).c_str(), path);
-    WriteColor4Hex(L"PathTrail", L"Color", L"Color", pathTrailColorR, pathTrailColorG, pathTrailColorB, pathTrailColorA, path);
-    WritePrivateProfileStringW(L"PathTrail", L"Thickness", std::to_wstring(static_cast<int>(pathTrailThickness * 100.0f + 0.5f)).c_str(), path);
-    WritePrivateProfileStringW(L"PathTrail", L"FadeByAge", std::to_wstring(pathTrailFadeByAge ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"PathTrail", L"SmartSpacing", std::to_wstring(pathTrailSmartSpacing ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"PathTrail", L"Pulse", std::to_wstring(pathPulseEnabled ? 1 : 0).c_str(), path);
-    WriteColor3Hex(L"PathTrail", L"PulseColor", L"PulseColor", pathPulseColorR, pathPulseColorG, pathPulseColorB, path);
+    ini.SetLongValue("PathTracking", "Enabled", enablePathTracking ? 1L : 0L);
+    ini.SetLongValue("PathTrail", "Visible", pathTrailVisible ? 1L : 0L);
+    WriteColor4Hex(ini, "PathTrail", "Color", pathTrailColorR, pathTrailColorG, pathTrailColorB, pathTrailColorA);
+    ini.SetLongValue("PathTrail", "Thickness", static_cast<long>(pathTrailThickness * 100.0f + 0.5f));
+    ini.SetLongValue("PathTrail", "FadeByAge", pathTrailFadeByAge ? 1L : 0L);
+    ini.SetLongValue("PathTrail", "SmartSpacing", pathTrailSmartSpacing ? 1L : 0L);
+    ini.SetLongValue("PathTrail", "Pulse", pathPulseEnabled ? 1L : 0L);
+    WriteColor3Hex(ini, "PathTrail", "PulseColor", pathPulseColorR, pathPulseColorG, pathPulseColorB);
 
-    WritePrivateProfileStringW(L"Markers", L"IconScale", std::to_wstring(static_cast<int>(markerIconScale * 100.0f + 0.5f)).c_str(), path);
-    WriteColor4Hex(L"Markers", L"PinTint", L"PinTint", pinTintR, pinTintG, pinTintB, pinTintA, path);
-    WritePrivateProfileStringW(L"Markers", L"IconFx3D", std::to_wstring(iconFx3D ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"Markers", L"FavSize", std::to_wstring(static_cast<int>(favBadgeSize * 100.0f + 0.5f)).c_str(), path);
-    WriteColor4Hex(L"Markers", L"FavColor", L"FavColor", favBadgeColorR, favBadgeColorG, favBadgeColorB, favBadgeColorA, path);
-    WritePrivateProfileStringW(L"Markers", L"NoteSize", std::to_wstring(static_cast<int>(noteBadgeSize * 100.0f + 0.5f)).c_str(), path);
-    WriteColor4Hex(L"Markers", L"NoteColor", L"NoteColor", noteBadgeColorR, noteBadgeColorG, noteBadgeColorB, noteBadgeColorA, path);
-    WritePrivateProfileStringW(L"Markers", L"ClearedSize", std::to_wstring(static_cast<int>(clearedBadgeSize * 100.0f + 0.5f)).c_str(), path);
-    WriteColor4Hex(L"Markers", L"ClearedColor", L"ClearedColor", clearedBadgeColorR, clearedBadgeColorG, clearedBadgeColorB, clearedBadgeColorA, path);
-    WritePrivateProfileStringW(L"Markers", L"ImageEnabled", markerImageEnabled ? L"1" : L"0", path);
-    WritePrivateProfileStringW(L"Markers", L"ImageWidth", std::to_wstring(static_cast<int>(markerImageWidth * 100.0f + 0.5f)).c_str(), path);
-    WritePrivateProfileStringW(L"Markers", L"ImageAlpha", std::to_wstring(static_cast<int>(markerImageAlpha * 100.0f + 0.5f)).c_str(), path);
-    WritePrivateProfileStringW(L"Markers", L"HoverOffsetX", std::to_wstring(markerHoverOffsetX).c_str(), path);
-    WritePrivateProfileStringW(L"Markers", L"HoverOffsetY", std::to_wstring(markerHoverOffsetY).c_str(), path);
+    ini.SetLongValue("Markers", "IconScale", static_cast<long>(markerIconScale * 100.0f + 0.5f));
+    WriteColor4Hex(ini, "Markers", "PinTint", pinTintR, pinTintG, pinTintB, pinTintA);
+    ini.SetLongValue("Markers", "IconFx3D", iconFx3D ? 1L : 0L);
+    ini.SetLongValue("Markers", "IconShadow", iconShadow ? 1L : 0L);
+    ini.SetLongValue("Markers", "EnableBadges", enableBadges ? 1L : 0L);
+    ini.SetLongValue("Markers", "FavSize", static_cast<long>(favBadgeSize * 100.0f + 0.5f));
+    WriteColor4Hex(ini, "Markers", "FavColor", favBadgeColorR, favBadgeColorG, favBadgeColorB, favBadgeColorA);
+    ini.SetLongValue("Markers", "NoteSize", static_cast<long>(noteBadgeSize * 100.0f + 0.5f));
+    WriteColor4Hex(ini, "Markers", "NoteColor", noteBadgeColorR, noteBadgeColorG, noteBadgeColorB, noteBadgeColorA);
+    ini.SetLongValue("Markers", "ClearedSize", static_cast<long>(clearedBadgeSize * 100.0f + 0.5f));
+    WriteColor4Hex(ini, "Markers", "ClearedColor", clearedBadgeColorR, clearedBadgeColorG, clearedBadgeColorB, clearedBadgeColorA);
+    ini.SetLongValue("Markers", "ImageEnabled", markerImageEnabled ? 1L : 0L);
+    ini.SetLongValue("Markers", "ImageWidth", static_cast<long>(markerImageWidth * 100.0f + 0.5f));
+    ini.SetLongValue("Markers", "ImageAlpha", static_cast<long>(markerImageAlpha * 100.0f + 0.5f));
+    ini.SetLongValue("Markers", "HoverOffsetX", markerHoverOffsetX);
+    ini.SetLongValue("Markers", "HoverOffsetY", markerHoverOffsetY);
 
-    WriteColor3Hex(L"Appearance", L"TitleColor", nullptr, titleColorR, titleColorG, titleColorB, path);
-    WriteColor3Hex(L"Appearance", L"BodyColor", nullptr, bodyColorR, bodyColorG, bodyColorB, path);
-    WriteColor4Hex(L"Appearance", L"BgColor", nullptr, bgColorR, bgColorG, bgColorB, bgColorA, path);
-    WriteColor4Hex(L"Appearance", L"BorderColor", nullptr, borderColorR, borderColorG, borderColorB, borderColorA, path);
+    WriteColor3Hex(ini, "Appearance", "TitleColor", titleColorR, titleColorG, titleColorB);
+    WriteColor3Hex(ini, "Appearance", "BodyColor", bodyColorR, bodyColorG, bodyColorB);
+    WriteColor4Hex(ini, "Appearance", "BgColor", bgColorR, bgColorG, bgColorB, bgColorA);
+    WriteColor4Hex(ini, "Appearance", "BorderColor", borderColorR, borderColorG, borderColorB, borderColorA);
 
-    WritePrivateProfileStringW(L"Appearance", L"BgShadow", std::to_wstring(bgShadow ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"Appearance", L"BgGradient", std::to_wstring(bgGradient ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"Appearance", L"BgVignette", std::to_wstring(bgVignette ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"Appearance", L"BgHighlight", std::to_wstring(bgHighlight ? 1 : 0).c_str(), path);
-    WritePrivateProfileStringW(L"Appearance", L"BgBorder", std::to_wstring(bgBorder ? 1 : 0).c_str(), path);
+    ini.SetLongValue("Appearance", "BgShadow", bgShadow ? 1L : 0L);
+    ini.SetLongValue("Appearance", "BgGradient", bgGradient ? 1L : 0L);
+    ini.SetLongValue("Appearance", "BgVignette", bgVignette ? 1L : 0L);
+    ini.SetLongValue("Appearance", "BgHighlight", bgHighlight ? 1L : 0L);
+    ini.SetLongValue("Appearance", "BgBorder", bgBorder ? 1L : 0L);
 
-    SavePositions();
+    if (!EnsureIniDirectory(path)) {
+        return;
+    }
+    if (const SI_Error rc = ini.SaveFile(path.c_str()); rc < SI_OK) {
+        logger::error("Failed to save CustomMarkers.ini to '{}': SimpleIni error {}",
+                      path.string(), rc);
+    }
 }
 
 void Settings::SavePositions() {
     const auto path = GetIniPath();
 
-    WritePrivateProfileStringW(L"Menu", L"ActiveTab", std::to_wstring(menuActiveTab).c_str(), path);
-    WritePrivateProfileStringW(L"Menu", L"PosX", std::to_wstring(menuPosX).c_str(), path);
-    WritePrivateProfileStringW(L"Menu", L"PosY", std::to_wstring(menuPosY).c_str(), path);
-    WritePrivateProfileStringW(L"ListPanel", L"PosX", std::to_wstring(listPanelPosX).c_str(), path);
-    WritePrivateProfileStringW(L"ListPanel", L"PosY", std::to_wstring(listPanelPosY).c_str(), path);
-    WritePrivateProfileStringW(L"ListPanel", L"ActiveTab", std::to_wstring(listActiveTab).c_str(), path);
-    WritePrivateProfileStringW(L"Filters", L"PosX", std::to_wstring(filterPosX).c_str(), path);
-    WritePrivateProfileStringW(L"Filters", L"PosY", std::to_wstring(filterPosY).c_str(), path);
-    WritePrivateProfileStringW(L"Filters", L"Collapsed", std::to_wstring(filterCollapsed ? 1 : 0).c_str(), path);
+    CSimpleIniA ini;
+    ini.SetUnicode();
+    if (!fs::exists(path)) {
+        Save();
+        return;
+    }
+    if (const SI_Error rc = ini.LoadFile(path.c_str()); rc < SI_OK) {
+        logger::error("Refusing to overwrite unreadable CustomMarkers.ini at '{}': SimpleIni error {}",
+                      path.string(), rc);
+        return;
+    }
+
+    ini.SetLongValue("Menu", "ActiveTab", menuActiveTab);
+    ini.SetLongValue("Menu", "PosX", menuPosX);
+    ini.SetLongValue("Menu", "PosY", menuPosY);
+    ini.SetLongValue("ListPanel", "PosX", listPanelPosX);
+    ini.SetLongValue("ListPanel", "PosY", listPanelPosY);
+    ini.SetLongValue("ListPanel", "ActiveTab", listActiveTab);
+    ini.SetLongValue("ListPanel", "Visible", listPanelVisible ? 1L : 0L);
+    ini.SetLongValue("Filters", "PosX", filterPosX);
+    ini.SetLongValue("Filters", "PosY", filterPosY);
+    ini.SetLongValue("Filters", "Collapsed", filterCollapsed ? 1L : 0L);
+
+    if (!EnsureIniDirectory(path)) {
+        return;
+    }
+    if (const SI_Error rc = ini.SaveFile(path.c_str()); rc < SI_OK) {
+        logger::error("Failed to save CustomMarkers.ini positions to '{}': SimpleIni error {}",
+                      path.string(), rc);
+    }
 }

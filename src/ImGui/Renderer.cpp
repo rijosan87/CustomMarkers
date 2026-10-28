@@ -1,5 +1,4 @@
-// ImGui DirectX 11 renderer and WndProc input hooking.
-
+#include "AutomationTelemetry.h"
 #include "ImGui/Renderer.h"
 #include "MapMarkerRenderer.h"
 #include "LocalMapRenderer.h"
@@ -7,19 +6,24 @@
 #include "HoverImageRenderer.h"
 #include "PathTracker.h"
 #include "MinimapRenderer.h"
+#include "MinimapSnapshotTransition.h"
 #include "WorldBeaconRenderer.h"
 #include "LootBeamRenderer.h"
 #include "LookPinRenderer.h"
 #include "MapLookRemapHook.h"
-#include "MapDrawHelpers.h"
-
+#include "MapDrawHelpers.h"   // MapDraw::DrawRequestedCursor (frame-end cursor)
+// #include "LocalMapHudSpike.h"
 #include "SettingsMenu.h"
+#include "Settings.h"
+#include "UIScale.h"
 #include "FontManager.h"
 #include "BackgroundManager.h"
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <imgui_impl_dx11.h>
 #include <imgui_impl_win32.h>
 #include <d3d11.h>
@@ -36,13 +40,260 @@ namespace ImGuiRenderer {
     static WNDPROC g_OriginalWndProc = nullptr;
     static std::atomic<bool> g_IsAnyPopupOpen{false};
 
+    // Read ImGui internals only on the render thread. WantTextInput alone
+    // cannot identify which field owns input or whether NewFrame processed it.
+    static void LogInputFrame() {
+        static bool wasEnabled = false;
+        static ImGuiID lastActive = 0;
+        static unsigned lastFlags = 0;
+        static double lastHeartbeat = 0.0;
+        if (!Settings::GetSingleton()->inputVerboseLog) {
+            wasEnabled = false;
+            return;
+        }
+        auto& g = *ImGui::GetCurrentContext();
+        auto& io = ImGui::GetIO();
+        const bool dialog = MapMarkerRenderer::GetSingleton()->IsNoteDialogOpen();
+        const bool settings = SettingsMenu::IsVisible();
+        const unsigned flags = (io.WantTextInput ? 1u : 0u) |
+            (io.WantCaptureKeyboard ? 2u : 0u) | (io.WantCaptureMouse ? 4u : 0u) |
+            (dialog ? 8u : 0u) | (settings ? 16u : 0u) |
+            (SettingsMenu::IsGameplayHosted() ? 32u : 0u);
+        if (!wasEnabled) {
+            SKSE::log::info("[InputVerbose] enabled imgui={} wcharBytes={} trickle={} scope=all_arriving_characters_and_buttons upstream_removed_events_are_not_visible",
+                           IMGUI_VERSION, sizeof(ImWchar), io.ConfigInputTrickleEventQueue);
+        }
+        bool textOrKey = false;
+        for (const auto& event : g.InputEventsTrail) {
+            if (event.Type == ImGuiInputEventType_Text) {
+                textOrKey = true;
+                SKSE::log::info("[InputVerbose] imgui_processed frame={} thread={} codepoint=U+{:04X}",
+                               g.FrameCount, GetCurrentThreadId(), event.Text.Char);
+            } else if (event.Type == ImGuiInputEventType_Key) {
+                textOrKey = true;
+                SKSE::log::info("[InputVerbose] imgui_key frame={} key={} down={} analog={}",
+                               g.FrameCount, static_cast<int>(event.Key.Key), event.Key.Down, event.Key.AnalogValue);
+            } else if (event.Type == ImGuiInputEventType_MouseButton) {
+                textOrKey = true;
+                SKSE::log::info("[InputVerbose] imgui_mouse frame={} button={} down={}",
+                               g.FrameCount, event.MouseButton.Button, event.MouseButton.Down);
+            }
+        }
+        const bool changed = !wasEnabled || lastActive != g.ActiveId || lastFlags != flags;
+        if (changed || textOrKey || g.Time - lastHeartbeat >= 1.0) {
+            SKSE::log::info(
+                "[InputVerbose] frame={} thread={} active=0x{:X} window={} wantText={} captureKeyboard={} captureMouse={} dialog={} settings={} gameplay={} pending={} processed={} mouseX={} mouseY={} left={} right={} ctrl={} shift={} alt={} super={}",
+                g.FrameCount, GetCurrentThreadId(), g.ActiveId, g.NavWindow ? g.NavWindow->Name : "none",
+                io.WantTextInput, io.WantCaptureKeyboard, io.WantCaptureMouse, dialog, settings,
+                SettingsMenu::IsGameplayHosted(), g.InputEventsQueue.Size, g.InputEventsTrail.Size,
+                io.MousePos.x, io.MousePos.y, io.MouseDown[0], io.MouseDown[1],
+                io.KeyCtrl, io.KeyShift, io.KeyAlt, io.KeySuper);
+            if (auto* textState = ImGui::GetInputTextState(g.ActiveId)) {
+                SKSE::log::info("[InputVerbose] text_state frame={} id=0x{:X} cursor={} selectionStart={} selectionEnd={} offsets=imgui_native_units",
+                               g.FrameCount, textState->ID, textState->GetCursorPos(),
+                               textState->GetSelectionStart(), textState->GetSelectionEnd());
+            }
+            lastHeartbeat = g.Time;
+        }
+        lastActive = g.ActiveId;
+        lastFlags = flags;
+        wasEnabled = true;
+    }
+
     bool IsAnyPopupOpen() {
         return g_IsAnyPopupOpen.load();
+    }
+
+    void LogInputEnvironment(const char* reason) {
+        if (!Settings::GetSingleton()->inputVerboseLog) return;
+
+        POINT screen{};
+        const bool cursorValid = GetCursorPos(&screen) != FALSE;
+        const HWND foreground = GetForegroundWindow();
+        const HWND active = GetActiveWindow();
+        const HWND focus = GetFocus();
+        const HWND underCursor = cursorValid ? WindowFromPoint(screen) : nullptr;
+
+        DWORD foregroundPid = 0;
+        DWORD activePid = 0;
+        DWORD focusPid = 0;
+        DWORD underCursorPid = 0;
+        if (foreground) GetWindowThreadProcessId(foreground, &foregroundPid);
+        if (active) GetWindowThreadProcessId(active, &activePid);
+        if (focus) GetWindowThreadProcessId(focus, &focusPid);
+        if (underCursor) GetWindowThreadProcessId(underCursor, &underCursorPid);
+
+        RECT clientScreen{};
+        bool clientValid = false;
+        bool insideClient = false;
+        if (g_OutputWindow) {
+            RECT client{};
+            if (GetClientRect(g_OutputWindow, &client)) {
+                POINT topLeft{ client.left, client.top };
+                POINT bottomRight{ client.right, client.bottom };
+                if (ClientToScreen(g_OutputWindow, &topLeft) &&
+                    ClientToScreen(g_OutputWindow, &bottomRight)) {
+                    clientScreen = { topLeft.x, topLeft.y, bottomRight.x, bottomRight.y };
+                    clientValid = true;
+                    insideClient = cursorValid && PtInRect(&clientScreen, screen) != FALSE;
+                }
+            }
+        }
+
+        RECT clip{};
+        const bool clipValid = GetClipCursor(&clip) != FALSE;
+        const HMONITOR cursorMonitor = cursorValid
+            ? MonitorFromPoint(screen, MONITOR_DEFAULTTONEAREST) : nullptr;
+        const HMONITOR gameMonitor = g_OutputWindow
+            ? MonitorFromWindow(g_OutputWindow, MONITOR_DEFAULTTONEAREST) : nullptr;
+        const DWORD processPid = GetCurrentProcessId();
+
+        logger::info(
+            "[InputVerbose] windows reason={} thread={} cursorValid={} cursor=({}, {}) insideGameClient={} clientValid={} client=({}, {}, {}, {}) clipValid={} clip=({}, {}, {}, {}) gameWindow={} foreground={} foregroundPid={} foregroundIsGame={} active={} activePid={} activeIsGame={} focus={} focusPid={} focusIsGame={} underCursor={} underCursorPid={} underCursorIsGame={} cursorMonitor={} gameMonitor={} sameMonitor={}",
+            reason ? reason : "unknown", GetCurrentThreadId(), cursorValid,
+            screen.x, screen.y, insideClient, clientValid,
+            clientScreen.left, clientScreen.top, clientScreen.right, clientScreen.bottom,
+            clipValid, clip.left, clip.top, clip.right, clip.bottom,
+            static_cast<void*>(g_OutputWindow), static_cast<void*>(foreground), foregroundPid,
+            foregroundPid == processPid, static_cast<void*>(active), activePid,
+            activePid == processPid, static_cast<void*>(focus), focusPid,
+            focusPid == processPid, static_cast<void*>(underCursor), underCursorPid,
+            underCursorPid == processPid, static_cast<void*>(cursorMonitor),
+            static_cast<void*>(gameMonitor), cursorMonitor && cursorMonitor == gameMonitor);
+    }
+
+    static void LogMapCursorEnvironmentTransitions() {
+        static bool wasMapOpen = false;
+        static bool lastCursorValid = false;
+        static bool lastInsideClient = false;
+        static DWORD lastUnderCursorPid = 0;
+        static HMONITOR lastCursorMonitor = nullptr;
+
+        if (!Settings::GetSingleton()->inputVerboseLog || !g_OutputWindow) {
+            wasMapOpen = false;
+            return;
+        }
+
+        auto* ui = RE::UI::GetSingleton();
+        const bool mapOpen = ui && ui->IsMenuOpen(RE::MapMenu::MENU_NAME);
+        if (!mapOpen) {
+            wasMapOpen = false;
+            return;
+        }
+
+        POINT screen{};
+        const bool cursorValid = GetCursorPos(&screen) != FALSE;
+        bool insideClient = false;
+        if (cursorValid) {
+            RECT client{};
+            if (GetClientRect(g_OutputWindow, &client)) {
+                POINT topLeft{ client.left, client.top };
+                POINT bottomRight{ client.right, client.bottom };
+                if (ClientToScreen(g_OutputWindow, &topLeft) &&
+                    ClientToScreen(g_OutputWindow, &bottomRight)) {
+                    const RECT clientScreen{
+                        topLeft.x, topLeft.y, bottomRight.x, bottomRight.y
+                    };
+                    insideClient = PtInRect(&clientScreen, screen) != FALSE;
+                }
+            }
+        }
+
+        DWORD underCursorPid = 0;
+        if (cursorValid) {
+            if (const HWND underCursor = WindowFromPoint(screen)) {
+                GetWindowThreadProcessId(underCursor, &underCursorPid);
+            }
+        }
+        const HMONITOR cursorMonitor = cursorValid
+            ? MonitorFromPoint(screen, MONITOR_DEFAULTTONEAREST) : nullptr;
+
+        const bool changed = !wasMapOpen || cursorValid != lastCursorValid ||
+            insideClient != lastInsideClient || underCursorPid != lastUnderCursorPid ||
+            cursorMonitor != lastCursorMonitor;
+        if (changed) {
+            LogInputEnvironment("map_cursor_transition");
+        }
+
+        wasMapOpen = true;
+        lastCursorValid = cursorValid;
+        lastInsideClient = insideClient;
+        lastUnderCursorPid = underCursorPid;
+        lastCursorMonitor = cursorMonitor;
+    }
+
+    static void LogCursorMenuState() {
+        static bool wasEnabled = false;
+        static bool lastMapOpen = false;
+        static std::uintptr_t lastMenu = 0;
+        static std::uintptr_t lastMovie = 0;
+        static int lastVisible = -2;
+        static std::uint64_t frames = 0;
+        static std::uint64_t availableSamples = 0;
+        static std::uint64_t visibleSamples = 0;
+
+        if (!Settings::GetSingleton()->cursorVerboseLog) {
+            wasEnabled = false;
+            lastMapOpen = false;
+            lastMenu = 0;
+            lastMovie = 0;
+            lastVisible = -2;
+            frames = 0;
+            availableSamples = 0;
+            visibleSamples = 0;
+            return;
+        }
+
+        auto* ui = RE::UI::GetSingleton();
+        const bool mapOpen = ui && ui->IsMenuOpen(RE::MapMenu::MENU_NAME);
+        auto cursorMenu = ui ? ui->GetMenu<RE::CursorMenu>() : nullptr;
+        auto* movie = cursorMenu ? cursorMenu->uiMovie.get() : nullptr;
+        const auto menuAddress = reinterpret_cast<std::uintptr_t>(cursorMenu.get());
+        const auto movieAddress = reinterpret_cast<std::uintptr_t>(movie);
+        const int visible = movie ? static_cast<int>(movie->GetVisible()) : -1;
+
+        if (mapOpen) {
+            ++frames;
+            if (visible >= 0) {
+                ++availableSamples;
+                if (visible == 1) {
+                    ++visibleSamples;
+                }
+            }
+        }
+
+        if (lastMapOpen && !mapOpen) {
+            logger::info(
+                "[CursorVerbose] map_session_end frames={} availableSamples={} hiddenSamples={} visibleSamples={} visibleObserved={}",
+                frames, availableSamples, availableSamples - visibleSamples,
+                visibleSamples, visibleSamples > 0);
+            frames = 0;
+            availableSamples = 0;
+            visibleSamples = 0;
+        }
+
+        if (!wasEnabled || mapOpen != lastMapOpen || menuAddress != lastMenu ||
+            movieAddress != lastMovie || visible != lastVisible) {
+            logger::info(
+                "[CursorVerbose] state frame={} mapOpen={} cursorMenu={} uiMovie={} visible={} unexpectedVisible={}",
+                ImGui::GetFrameCount(), mapOpen,
+                static_cast<const void*>(cursorMenu.get()),
+                static_cast<const void*>(movie),
+                visible < 0 ? "unavailable" : (visible ? "true" : "false"),
+                mapOpen && visible == 1);
+        }
+
+        wasEnabled = true;
+        lastMapOpen = mapOpen;
+        lastMenu = menuAddress;
+        lastMovie = movieAddress;
+        lastVisible = visible;
     }
 
     static void PatchImGuiSamplerOnce() {
         static bool s_Patched = false;
         if (s_Patched) return;
+
         struct ImGui_ImplDX11_Data_Mirror {
             ID3D11Device*             pd3dDevice;
             ID3D11DeviceContext*      pd3dDeviceContext;
@@ -55,9 +306,11 @@ namespace ImGuiRenderer {
             ID3D11PixelShader*        pPixelShader;
             ID3D11SamplerState*       pFontSampler;
         };
+
         auto& io = ImGui::GetIO();
         auto* bd = static_cast<ImGui_ImplDX11_Data_Mirror*>(io.BackendRendererUserData);
-        if (!bd || !bd->pd3dDevice || !bd->pFontSampler) return;
+        if (!bd || !bd->pd3dDevice || !bd->pFontSampler) return;  // not ready yet
+
         D3D11_SAMPLER_DESC sd = {};
         sd.Filter         = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
         sd.AddressU       = D3D11_TEXTURE_ADDRESS_WRAP;
@@ -79,6 +332,26 @@ namespace ImGuiRenderer {
     }
 
     static LRESULT CALLBACK WndProcThunk(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+        // Observe Windows delivery without feeding another text path. These
+        // messages are supporting evidence, not a guaranteed upstream probe.
+        if (Settings::GetSingleton()->inputVerboseLog &&
+            (uMsg == WM_SETFOCUS || uMsg == WM_KILLFOCUS || uMsg == WM_ACTIVATEAPP ||
+             uMsg == WM_KEYDOWN || uMsg == WM_KEYUP || uMsg == WM_SYSKEYDOWN ||
+             uMsg == WM_SYSKEYUP || uMsg == WM_CHAR || uMsg == WM_UNICHAR ||
+             uMsg == WM_DEADCHAR || uMsg == WM_SYSCHAR || uMsg == WM_INPUTLANGCHANGE ||
+             uMsg == WM_IME_STARTCOMPOSITION || uMsg == WM_IME_COMPOSITION || uMsg == WM_IME_ENDCOMPOSITION ||
+             uMsg == WM_LBUTTONDOWN || uMsg == WM_LBUTTONUP ||
+             uMsg == WM_MBUTTONDOWN || uMsg == WM_MBUTTONUP ||
+             uMsg == WM_MOUSEWHEEL || uMsg == WM_MOUSEHWHEEL)) {
+            SKSE::log::info("[InputVerbose] win32 thread={} message=0x{:X} wparam=0x{:X} lparam=0x{:X} initialized={}",
+                           GetCurrentThreadId(), uMsg, static_cast<std::uintptr_t>(wParam),
+                           static_cast<std::uintptr_t>(lParam), g_Initialized);
+            if (uMsg == WM_SETFOCUS || uMsg == WM_KILLFOCUS || uMsg == WM_ACTIVATEAPP ||
+                uMsg == WM_MBUTTONDOWN || uMsg == WM_MBUTTONUP ||
+                uMsg == WM_MOUSEWHEEL || uMsg == WM_MOUSEHWHEEL) {
+                LogInputEnvironment("win32_message");
+            }
+        }
         if (g_Initialized && ImGui::GetCurrentContext()) {
             auto& io = ImGui::GetIO();
             if (io.WantCaptureMouse) {
@@ -86,6 +359,10 @@ namespace ImGuiRenderer {
                     case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
                     case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_RBUTTONDBLCLK:
                     case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDBLCLK:
+                        if (Settings::GetSingleton()->inputVerboseLog) {
+                            SKSE::log::info("[InputVerbose] win32_blocked thread={} message=0x{:X} reason=WantCaptureMouse",
+                                           GetCurrentThreadId(), uMsg);
+                        }
                         return 1;
                 }
             }
@@ -94,6 +371,146 @@ namespace ImGuiRenderer {
             }
         }
         return CallWindowProcA(g_OriginalWndProc, hWnd, uMsg, wParam, lParam);
+    }
+
+    static void LogRenderSpace() {
+        const auto* settings = Settings::GetSingleton();
+        if (!settings->mapPinProjectionLog && !settings->minimapSnapshotLog) return;
+        static double nextLog = 0.0;
+        if (ImGui::GetTime() < nextLog) return;
+        nextLog = ImGui::GetTime() + 1.0;
+
+        auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
+        if (!renderer) return;
+        auto& data = renderer->GetRuntimeData();
+        auto* context = reinterpret_cast<ID3D11DeviceContext*>(data.context);
+        auto* swapChain = reinterpret_cast<IDXGISwapChain*>(data.renderWindows[0].swapChain);
+        if (!context) return;
+
+        D3D11_TEXTURE2D_DESC boundDesc{}, backDesc{};
+        ID3D11RenderTargetView* rtv = nullptr;
+        context->OMGetRenderTargets(1, &rtv, nullptr);
+        if (rtv) {
+            ID3D11Resource* resource = nullptr;
+            rtv->GetResource(&resource);
+            if (resource) {
+                ID3D11Texture2D* texture = nullptr;
+                if (SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture)))) {
+                    texture->GetDesc(&boundDesc);
+                    texture->Release();
+                }
+                resource->Release();
+            }
+            rtv->Release();
+        }
+        if (swapChain) {
+            ID3D11Texture2D* texture = nullptr;
+            if (SUCCEEDED(swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture)))) {
+                texture->GetDesc(&backDesc);
+                texture->Release();
+            }
+        }
+        D3D11_VIEWPORT ports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE]{};
+        UINT count = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+        context->RSGetViewports(&count, ports);
+        RECT client{};
+        const bool clientValid = g_OutputWindow && GetClientRect(g_OutputWindow, &client);
+        MONITORINFO monitorInfo{};
+        monitorInfo.cbSize = sizeof(monitorInfo);
+        const HMONITOR monitor = g_OutputWindow
+            ? MonitorFromWindow(g_OutputWindow, MONITOR_DEFAULTTONEAREST)
+            : nullptr;
+        const bool monitorValid = monitor && GetMonitorInfoA(monitor, &monitorInfo);
+        const int desktopWidth = monitorValid ? monitorInfo.rcMonitor.right - monitorInfo.rcMonitor.left : 0;
+        const int desktopHeight = monitorValid ? monitorInfo.rcMonitor.bottom - monitorInfo.rcMonitor.top : 0;
+        const int workWidth = monitorValid ? monitorInfo.rcWork.right - monitorInfo.rcWork.left : 0;
+        const int workHeight = monitorValid ? monitorInfo.rcWork.bottom - monitorInfo.rcWork.top : 0;
+        const auto& io = ImGui::GetIO();
+        auto* cursor = RE::MenuCursor::GetSingleton();
+        // Desktop metrics distinguish a reduced game client from native rendering on a high-resolution monitor.
+        SKSE::log::info("[RenderSpace] frame={} stage=before-imgui bound={}x{} backbuffer={}x{} clientValid={} client={}x{} display={}x{} framebufferScale=({}, {}) monitorValid={} desktop={}x{} workArea={}x{} interfaceScale={} cursorSpace={}x{} viewportCount={} missingTextureSize=0",
+            ImGui::GetFrameCount(), boundDesc.Width, boundDesc.Height, backDesc.Width, backDesc.Height,
+            clientValid, client.right - client.left, client.bottom - client.top,
+            io.DisplaySize.x, io.DisplaySize.y, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y,
+            monitorValid, desktopWidth, desktopHeight, workWidth, workHeight, settings->interfaceScale,
+            cursor ? cursor->screenWidthX : 0.0f, cursor ? cursor->screenWidthY : 0.0f, count);
+        for (UINT i = 0; i < count; ++i) {
+            const auto& port = ports[i];
+            SKSE::log::info("[RenderSpace] frame={} viewport={} origin=({}, {}) size={}x{} depth=({}, {})",
+                ImGui::GetFrameCount(), i, port.TopLeftX, port.TopLeftY, port.Width, port.Height,
+                port.MinDepth, port.MaxDepth);
+        }
+    }
+
+    static void LogRenderResult(const char* result, const ImVec2& scale) {
+        const auto* settings = Settings::GetSingleton();
+        if (!settings->mapPinProjectionLog && !settings->minimapSnapshotLog) return;
+
+        static double nextLog = 0.0;
+        if (ImGui::GetTime() < nextLog) return;
+        nextLog = ImGui::GetTime() + 1.0;
+        SKSE::log::info("[RenderSpace] result={} scale=({}, {}) uiCompensation={}",
+            result, scale.x, scale.y, UIScale::PresentationCompensation());
+    }
+
+    static void RenderToBoundTarget(ImDrawData* drawData) {
+        if (!drawData || drawData->DisplaySize.x <= 0.0f || drawData->DisplaySize.y <= 0.0f) return;
+        auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
+        if (!renderer) return;
+        auto* context = reinterpret_cast<ID3D11DeviceContext*>(renderer->GetRuntimeData().context);
+        if (!context) return;
+        ID3D11RenderTargetView* rtv = nullptr;
+        context->OMGetRenderTargets(1, &rtv, nullptr);
+        if (!rtv) return;
+        ID3D11Resource* resource = nullptr;
+        rtv->GetResource(&resource);
+        rtv->Release();
+        if (!resource) return;
+        ID3D11Texture2D* texture = nullptr;
+        const HRESULT hr = resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture));
+        resource->Release();
+        if (FAILED(hr)) return;
+        D3D11_TEXTURE2D_DESC desc{};
+        texture->GetDesc(&desc);
+        texture->Release();
+        if (!desc.Width || !desc.Height) return;
+
+        const ImVec2 scale(static_cast<float>(desc.Width) / drawData->DisplaySize.x,
+                           static_cast<float>(desc.Height) / drawData->DisplaySize.y);
+        float uiCompensation = 1.0f;
+        const float largestScale = (std::max)(scale.x, scale.y);
+        const bool proportional = largestScale > 0.0f &&
+            std::abs(scale.x - scale.y) <= largestScale * 0.01f;
+        if (drawData->DisplaySize.y > 1080.0f && proportional &&
+            scale.x > 0.0f && scale.y > 0.0f && scale.x < 1.0f && scale.y < 1.0f) {
+            uiCompensation = 1.0f / scale.y;
+        }
+        UIScale::SetPresentationCompensation(uiCompensation);
+
+        if (scale.x == 1.0f && scale.y == 1.0f) {
+            LogRenderResult("direct-1to1", scale);
+            ImGui_ImplDX11_RenderDrawData(drawData);
+            return;
+        }
+        const ImVec2 displaySize = drawData->DisplaySize;
+        const ImVec2 displayPos = drawData->DisplayPos;
+        auto scaleVertices = [drawData](ImVec2 factor) {
+            for (int i = 0; i < drawData->CmdListsCount; ++i) {
+                for (auto& vertex : drawData->CmdLists[i]->VtxBuffer) {
+                    vertex.pos.x *= factor.x;
+                    vertex.pos.y *= factor.y;
+                }
+            }
+            drawData->ScaleClipRects(factor);
+        };
+        LogRenderResult("scaled", scale);
+        scaleVertices(scale);
+        drawData->DisplayPos = ImVec2(displayPos.x * scale.x, displayPos.y * scale.y);
+        drawData->DisplaySize = ImVec2(static_cast<float>(desc.Width), static_cast<float>(desc.Height));
+        ImGui_ImplDX11_RenderDrawData(drawData);
+        scaleVertices(ImVec2(1.0f / scale.x, 1.0f / scale.y));
+        drawData->DisplayPos = displayPos;
+        drawData->DisplaySize = displaySize;
     }
 
     struct PresentHook {
@@ -106,17 +523,22 @@ namespace ImGuiRenderer {
                         if (SUCCEEDED(swapChain->GetDesc(std::addressof(desc)))) {
                             const auto device  = (ID3D11Device*)renderer->GetRuntimeData().forwarder;
                             const auto context = (ID3D11DeviceContext*)renderer->GetRuntimeData().context;
+
                             ImGui::CreateContext();
                             auto& io = ImGui::GetIO();
                             io.ConfigFlags = ImGuiConfigFlags_NoMouseCursorChange;
                             io.IniFilename = nullptr;
+
                             if (ImGui_ImplWin32_Init(desc.OutputWindow) && ImGui_ImplDX11_Init(device, context)) {
                                 g_OutputWindow = desc.OutputWindow;
                                 SKSE::log::info("ImGui initialized successfully");
                                 g_Initialized = true;
+
                                 FontManager::GetSingleton()->LoadFonts(io);
+
                                 TextureManager::Init(device);
                                 BackgroundManager::Init();
+
                                 g_OriginalWndProc = reinterpret_cast<WNDPROC>(
                                     SetWindowLongPtrA(desc.OutputWindow, GWLP_WNDPROC,
                                                       reinterpret_cast<LONG_PTR>(WndProcThunk)));
@@ -126,13 +548,18 @@ namespace ImGuiRenderer {
                     }
                 }
             }
+
             if (g_Initialized) {
                 PatchImGuiSamplerOnce();
                 ImGui_ImplDX11_NewFrame();
                 ImGui_ImplWin32_NewFrame();
+
                 PathTracker::GetSingleton()->Update();
+
                 MapLookRemapHook::PinCursorIfTilting();
+
                 auto& io = ImGui::GetIO();
+
                 static bool s_gameplayCursorActive = false;
                 const bool gpHosted = SettingsMenu::IsGameplayHosted();
                 if (gpHosted != s_gameplayCursorActive) {
@@ -141,6 +568,7 @@ namespace ImGuiRenderer {
                         logger::debug("Gameplay cursor source activated");
                     }
                 }
+
                 if (gpHosted && g_OutputWindow) {
                     POINT p{};
                     if (GetCursorPos(&p) && ScreenToClient(g_OutputWindow, &p)) {
@@ -163,21 +591,34 @@ namespace ImGuiRenderer {
                         }
                     }
                 }
+
+                // Mouse buttons: poll the kernel async key state directly.
                 const bool lDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
                 const bool rDown = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
                 const bool mDown = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
                 io.AddMouseButtonEvent(0, lDown);
                 io.AddMouseButtonEvent(1, rDown);
                 io.AddMouseButtonEvent(2, mDown);
+
                 ImGui::NewFrame();
-                MapMarkerRenderer::GetSingleton()->Draw();
+                AutomationTelemetry::BeginFrame();
+
+                LogMapCursorEnvironmentTransitions();
+                LogCursorMenuState();
+
+                auto* mapRenderer = MapMarkerRenderer::GetSingleton();
+                mapRenderer->BeginControllerContextFrame();
+                mapRenderer->Draw();
                 LocalMapRenderer::GetSingleton()->Draw();
                 HoverImageRenderer::Draw();
+                mapRenderer->EndControllerContextFrame();
                 MinimapRenderer::GetSingleton()->Draw();
                 WorldBeaconRenderer::GetSingleton()->Draw();
                 LootBeamRenderer::GetSingleton()->Draw();
                 LookPinRenderer::GetSingleton()->Draw();
                 SettingsMenu::Draw();
+
+                // Map/HUD cursor, last.
                 if (SettingsMenu::IsVisible()) {
                     const ImVec2 p = ImGui::GetIO().MousePos;
                     if (p.x >= 0.0f && p.y >= 0.0f) {
@@ -185,11 +626,18 @@ namespace ImGuiRenderer {
                     }
                 }
                 MapDraw::DrawRequestedCursor();
+
                 g_IsAnyPopupOpen = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+
                 ImGui::EndFrame();
+                LogInputFrame();
+                AutomationTelemetry::EndFrame();
                 ImGui::Render();
-                ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+                LogRenderSpace();
+                RenderToBoundTarget(ImGui::GetDrawData());
+                MinimapSnapshotTransition::FinishFrame();
             }
+
             func(a_p1);
         }
         static inline REL::Relocation<decltype(thunk)> func;
@@ -197,11 +645,13 @@ namespace ImGuiRenderer {
 
     void Install() {
         SKSE::log::info("Installing ImGui Present hook...");
-        SKSE::AllocTrampoline(14);
+
         auto& trampoline = SKSE::GetTrampoline();
+
         REL::Relocation<std::uintptr_t> present_target{ RELOCATION_ID(75461, 77246) };
         MinimapRenderer::GetSingleton()->Install();
         PresentHook::func = trampoline.write_call<5>(present_target.address() + 0x9, PresentHook::thunk);
+
         SKSE::log::info("ImGui Present hook installed successfully");
     }
 }

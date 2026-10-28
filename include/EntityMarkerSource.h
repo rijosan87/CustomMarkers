@@ -1,33 +1,39 @@
 #pragma once
-
-// Tracks interactive world entities (doors, containers, corpses, flora) for radar.
-
 #include <RE/Skyrim.h>
 #include <cstdint>
 #include <deque>
 #include <unordered_set>
 #include <vector>
 
+// Tracks interactive world entities (doors, containers, corpses, flora) for radar.
 namespace EntityMarkerSource {
+    RE::TESObjectREFRPtr GetAshPileActor(RE::TESObjectREFR& a_ref);
+
     enum class Category : std::uint8_t { Corpse, Door, Container, LooseLoot, Ingredient };
 
     enum class SubCategory : std::uint8_t {
         None,
+        // Container
         ContChest, ContBarrel, ContSack, ContUrn, ContCoffin, ContStrongbox,
+        // Door
         DoorRegular, DoorLoad,
+        // Corpse
         CorpseHumanoid, CorpseCreature,
+        // Loose loot
         LootWeapon, LootArmor, LootGold, LootKey, LootPotion, LootFood, LootDrink, LootBook, LootSoulGem, LootScroll,
+        // Ingredient
         IngrLoose, IngrPlant,
         LootAmmo,
         ContSatchel,
+        LootCoinPurse,
     };
 
     struct EntityMarker {
         Category     category;
         SubCategory  subCategory;
         RE::NiPoint3 position;
-        RE::FormID   formID;
-        bool         discovered;
+        RE::FormID   formID;      // runtime refr id, for future hover/dedup; not drawn
+        bool         discovered;  // false = player has never been near it; draw skips it
     };
 
     constexpr float kEntityRevealRadius = 1000.0f;
@@ -45,9 +51,12 @@ namespace EntityMarkerSource {
     struct DiscoveryRayBudget {
         explicit DiscoveryRayBudget(std::size_t a_maxRaysPerCollect = 8) :
             maxRaysPerCollect(a_maxRaysPerCollect) {}
+
         std::size_t maxRaysPerCollect = 8;
         std::deque<PendingDiscoveryRay> pending;
         std::unordered_set<RE::FormID> queued;
+
+        // Last-collect telemetry. The caller may log this behind its own gate.
         std::size_t filteredOut = 0;
         std::size_t candidates = 0;
         std::size_t raysCast   = 0;
@@ -72,6 +81,8 @@ namespace EntityMarkerSource {
 
     const char* IconNameFor(Category a_cat, SubCategory a_sub);
 
+    // Category-level fallback PNG basename, used when IconNameFor(sub)
+    // returns nullptr or the subcategory-specific PNG failed to load.
     const char* CategoryIconName(Category a_cat);
 
     void ClearDiscovered();

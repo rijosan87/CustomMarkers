@@ -1,5 +1,3 @@
-// Core data store and cosave serialization for custom markers and notes.
-
 #include "MarkerManager.h"
 #include "LocalizationManager.h"
 #include "MapMarkerRenderer.h"
@@ -8,9 +6,10 @@
 #include <cmath>
 #include <memory>
 
+// Unique signature for the save file (4 bytes)
+// "CMMK" = Custom MarKers or Custom Map Markers
 const std::uint32_t kSerializationSignature = 'CMMK';
-
-const std::uint32_t kSerializationVersion = 7;
+const std::uint32_t kSerializationVersion = 8;
 
 namespace {
     constexpr std::uint32_t kMaxSerializedEntries = 10'000;
@@ -20,10 +19,12 @@ namespace {
     public:
         RecordReader(SKSE::SerializationInterface* a_serde, std::uint32_t a_length) :
             serde(a_serde), remaining(a_length) {}
+
         template <class T>
         bool Read(T& a_value) {
             return ReadBytes(std::addressof(a_value), sizeof(T));
         }
+
         bool ReadBytes(void* a_dst, std::uint32_t a_size) {
             if (!serde || a_size > remaining) return false;
             const std::uint32_t read = serde->ReadRecordData(a_dst, a_size);
@@ -31,13 +32,16 @@ namespace {
             remaining -= read;
             return read == a_size;
         }
+
         bool ReadString(std::string& a_out) {
             std::uint32_t size = 0;
             if (!Read(size) || size > kMaxSerializedStringBytes || size > remaining) return false;
             a_out.resize(size);
             return size == 0 || ReadBytes(a_out.data(), size);
         }
+
         std::uint32_t Remaining() const { return remaining; }
+
     private:
         SKSE::SerializationInterface* serde;
         std::uint32_t remaining;
@@ -129,16 +133,21 @@ namespace {
                         std::uint32_t a_length,
                         LoadedMarkerState& a_out) {
         RecordReader reader(a_serde, a_length);
+
+        // 1. Read Marker Count
         std::uint32_t markerCount = 0;
         if (!reader.Read(markerCount)) {
             logger::error("CMMK v{}: failed to read marker count (length {})", a_version, a_length);
             return false;
         }
-        const std::uint32_t minMarkerSize = (a_version >= 5) ? 46 : ((a_version >= 2) ? 41 : 40);
-        std::uint32_t mandatoryTrailing = 4;
-        if (a_version >= 3) mandatoryTrailing += 4;
-        if (a_version >= 4) mandatoryTrailing += 4;
-        if (a_version >= 6) mandatoryTrailing += 1;
+
+        const std::uint32_t minMarkerSize = (a_version >= 8) ? 47 :
+                                            ((a_version >= 5) ? 46 : ((a_version >= 2) ? 41 : 40));
+        std::uint32_t mandatoryTrailing = 4; // _nextID
+        if (a_version >= 3) mandatoryTrailing += 4; // favCount
+        if (a_version >= 4) mandatoryTrailing += 4; // noteCount
+        if (a_version >= 6) mandatoryTrailing += 1; // destPresent
+
         if (markerCount > kMaxSerializedEntries ||
             reader.Remaining() < mandatoryTrailing ||
             (reader.Remaining() - mandatoryTrailing) / minMarkerSize < markerCount) {
@@ -146,8 +155,11 @@ namespace {
                           a_version, markerCount, reader.Remaining());
             return false;
         }
+
         a_out.markers.reserve(markerCount);
         std::uint32_t discardedMarkers = 0;
+
+        // 2. Read Markers
         for (std::uint32_t i = 0; i < markerCount; ++i) {
             std::uint32_t id = 0;
             RE::FormID worldSpaceID = 0;
@@ -159,6 +171,8 @@ namespace {
             std::uint8_t destByte = 0;
             std::uint8_t autoByte = 0;
             std::uint32_t autoNameNumber = 0;
+            std::uint8_t originByte = static_cast<std::uint8_t>(MarkerOrigin::Manual);
+
             if (!reader.Read(id) ||
                 !reader.Read(worldSpaceID) ||
                 !reader.Read(cellID) ||
@@ -169,31 +183,55 @@ namespace {
                 logger::error("CMMK v{}: truncated base marker {} of {}", a_version, i, markerCount);
                 return false;
             }
+
             if (a_version >= 2) {
                 if (!reader.Read(destByte)) {
                     logger::error("CMMK v{}: truncated dest byte on marker {} of {}", a_version, i, markerCount);
                     return false;
                 }
             }
+
             if (a_version >= 5) {
                 if (!reader.Read(autoByte) || !reader.Read(autoNameNumber)) {
                     logger::error("CMMK v{}: truncated autoName on marker {} of {}", a_version, i, markerCount);
                     return false;
                 }
             }
+
+            if (a_version >= 8) {
+                if (!reader.Read(originByte)) {
+                    logger::error("CMMK v{}: truncated origin on marker {} of {}", a_version, i, markerCount);
+                    return false;
+                }
+            } else if (autoByte == static_cast<std::uint8_t>(AutoName::Pinned)) {
+                originByte = static_cast<std::uint8_t>(MarkerOrigin::LookAndPin);
+            } else if (autoByte == static_cast<std::uint8_t>(AutoName::QuickMark)) {
+                originByte = static_cast<std::uint8_t>(MarkerOrigin::InspectQuickMark);
+            }
+
+            // Entry validation
             bool entryValid = true;
+
             if (destByte > 1) {
                 logger::warn("Discarding marker {}: invalid destByte {}", id, destByte);
                 entryValid = false;
             }
+
             if (autoByte > static_cast<std::uint8_t>(AutoName::QuickMark)) {
                 logger::warn("Discarding marker {}: invalid autoName {}", id, autoByte);
                 entryValid = false;
             }
+
+            if (originByte > static_cast<std::uint8_t>(MarkerOrigin::InspectQuickMark)) {
+                logger::warn("Discarding marker {}: invalid origin {}", id, originByte);
+                entryValid = false;
+            }
+
             if (id == 0 || id == kVanillaDestId) {
                 logger::warn("Discarding marker: reserved or zero id {:08X}", id);
                 entryValid = false;
             }
+
             for (const auto& existing : a_out.markers) {
                 if (existing.id == id) {
                     logger::warn("Discarding marker: duplicate id {}", id);
@@ -201,10 +239,12 @@ namespace {
                     break;
                 }
             }
+
             if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z)) {
                 logger::warn("Discarding marker {}: non-finite position ({}, {}, {})", id, position.x, position.y, position.z);
                 entryValid = false;
             }
+
             RE::FormID resolvedWS = 0;
             RE::FormID resolvedCell = 0;
             if (entryValid) {
@@ -224,6 +264,7 @@ namespace {
                     }
                 }
             }
+
             if (!entryValid) {
                 discardedMarkers++;
             } else {
@@ -238,13 +279,18 @@ namespace {
                 m.isDestination = (destByte != 0);
                 m.autoName = static_cast<AutoName>(autoByte);
                 m.autoNameNumber = autoNameNumber;
+                m.origin = static_cast<MarkerOrigin>(originByte);
                 a_out.markers.push_back(std::move(m));
             }
         }
+
+        // 3. Read Next ID
         if (!reader.Read(a_out.savedNextID)) {
             logger::error("CMMK v{}: failed to read saved _nextID", a_version);
             return false;
         }
+
+        // 4. Read Favorites (v3+)
         std::uint32_t discardedFavorites = 0;
         if (a_version >= 3) {
             std::uint32_t favCount = 0;
@@ -254,8 +300,9 @@ namespace {
             }
             constexpr std::uint32_t minFavSize = 28;
             std::uint32_t mandatoryAfterFav = 0;
-            if (a_version >= 4) mandatoryAfterFav += 4;
-            if (a_version >= 6) mandatoryAfterFav += 1;
+            if (a_version >= 4) mandatoryAfterFav += 4; // noteCount
+            if (a_version >= 6) mandatoryAfterFav += 1; // destPresent
+
             if (favCount > kMaxSerializedEntries ||
                 reader.Remaining() < mandatoryAfterFav ||
                 (reader.Remaining() - mandatoryAfterFav) / minFavSize < favCount) {
@@ -263,6 +310,7 @@ namespace {
                               a_version, favCount, reader.Remaining());
                 return false;
             }
+
             a_out.favorites.reserve(favCount);
             for (std::uint32_t i = 0; i < favCount; ++i) {
                 RE::FormID formID = 0;
@@ -270,6 +318,7 @@ namespace {
                 RE::FormID cellID = 0;
                 RE::NiPoint3 position{};
                 std::string name;
+
                 if (!reader.Read(formID) ||
                     !reader.Read(worldSpaceID) ||
                     !reader.Read(cellID) ||
@@ -278,16 +327,19 @@ namespace {
                     logger::error("CMMK v{}: truncated favorite {} of {}", a_version, i, favCount);
                     return false;
                 }
+
                 bool favValid = true;
                 if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z)) {
                     logger::warn("Discarding favorite {:08X}: non-finite position", formID);
                     favValid = false;
                 }
+
                 RE::FormID resolvedFormID = 0;
                 if (favValid && !ResolveNonzeroFormID(a_serde, formID, resolvedFormID)) {
                     logger::warn("Discarding favorite: unresolvable formID {:08X}", formID);
                     favValid = false;
                 }
+
                 RE::FormID resolvedWS = 0;
                 RE::FormID resolvedCell = 0;
                 if (favValid) {
@@ -309,6 +361,7 @@ namespace {
                         }
                     }
                 }
+
                 if (!favValid) {
                     discardedFavorites++;
                 } else {
@@ -322,6 +375,8 @@ namespace {
                 }
             }
         }
+
+        // 5. Read Vanilla-marker notes (v4+)
         std::uint32_t discardedNotes = 0;
         if (a_version >= 4) {
             std::uint32_t noteCount = 0;
@@ -331,7 +386,8 @@ namespace {
             }
             constexpr std::uint32_t minNoteSize = 8;
             std::uint32_t mandatoryAfterNotes = 0;
-            if (a_version >= 6) mandatoryAfterNotes += 1;
+            if (a_version >= 6) mandatoryAfterNotes += 1; // destPresent
+
             if (noteCount > kMaxSerializedEntries ||
                 reader.Remaining() < mandatoryAfterNotes ||
                 (reader.Remaining() - mandatoryAfterNotes) / minNoteSize < noteCount) {
@@ -339,6 +395,7 @@ namespace {
                               a_version, noteCount, reader.Remaining());
                 return false;
             }
+
             a_out.vanillaNotes.reserve(noteCount);
             for (std::uint32_t i = 0; i < noteCount; ++i) {
                 RE::FormID formID = 0;
@@ -347,6 +404,7 @@ namespace {
                     logger::error("CMMK v{}: truncated note {} of {}", a_version, i, noteCount);
                     return false;
                 }
+
                 RE::FormID resolvedFormID = 0;
                 if (!ResolveNonzeroFormID(a_serde, formID, resolvedFormID) || note.empty()) {
                     logger::warn("Discarding vanilla note for FormID {:08X}", formID);
@@ -356,6 +414,8 @@ namespace {
                 }
             }
         }
+
+        // 6. Read Vanilla Destination (v6+)
         bool discardedDest = false;
         if (a_version >= 6) {
             std::uint8_t destPresent = 0;
@@ -363,10 +423,12 @@ namespace {
                 logger::error("CMMK v{}: failed to read destPresent byte", a_version);
                 return false;
             }
+
             if (destPresent != 0 && destPresent != 1) {
                 logger::error("CMMK v{}: invalid destPresent byte value {} (must be 0 or 1)", a_version, destPresent);
-                return false;
+                return false; // Structural error
             }
+
             if (destPresent == 1) {
                 RE::FormID worldSpaceID = 0;
                 RE::FormID cellID = 0;
@@ -374,6 +436,7 @@ namespace {
                 std::string name;
                 RE::FormID sourceFormID = 0;
                 std::uint8_t fromLocalDoor = 0;
+
                 if (!reader.Read(worldSpaceID) ||
                     !reader.Read(cellID) ||
                     !reader.Read(position) ||
@@ -381,21 +444,25 @@ namespace {
                     logger::error("CMMK v{}: truncated vanilla destination prefix", a_version);
                     return false;
                 }
+
                 if (a_version >= 7) {
                     if (!reader.Read(sourceFormID) || !reader.Read(fromLocalDoor)) {
                         logger::error("CMMK v{}: truncated vanilla destination v7 suffix", a_version);
                         return false;
                     }
                 }
+
                 bool destValid = true;
                 if (a_version >= 7 && fromLocalDoor > 1) {
                     logger::warn("Discarding vanilla destination: invalid fromLocalDoor byte {}", fromLocalDoor);
                     destValid = false;
                 }
+
                 if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z)) {
                     logger::warn("Discarding vanilla destination: non-finite position");
                     destValid = false;
                 }
+
                 RE::FormID resolvedSource = 0;
                 if (destValid && sourceFormID != 0) {
                     if (!ResolveNonzeroFormID(a_serde, sourceFormID, resolvedSource)) {
@@ -403,6 +470,7 @@ namespace {
                         destValid = false;
                     }
                 }
+
                 RE::FormID resolvedWS = 0;
                 RE::FormID resolvedCell = 0;
                 if (destValid) {
@@ -422,6 +490,7 @@ namespace {
                         }
                     }
                 }
+
                 if (!destValid) {
                     discardedDest = true;
                 } else {
@@ -435,11 +504,14 @@ namespace {
                 }
             }
         }
+
+        // Check unconsumed trailing bytes
         if (reader.Remaining() != 0) {
             logger::error("CMMK v{} record had {} unconsumed trailing bytes (declared length {})",
                           a_version, reader.Remaining(), a_length);
             return false;
         }
+
         logger::info("Loaded CMMK v{} record: {} markers ({} discarded), {} favorites ({} discarded), {} notes ({} discarded), vanilla dest active={} ({} discarded). Next ID hint: {}",
                      a_version, a_out.markers.size(), discardedMarkers,
                      a_out.favorites.size(), discardedFavorites,
@@ -450,6 +522,8 @@ namespace {
     }
 }
 
+// Auto-name pattern per scheme. The VALUE carries the placeholder so a
+// translator can move it; a value with no "{}" just prints without the number.
 static const char* AutoNameKey(AutoName scheme) {
     switch (scheme) {
         case AutoName::Custom:    return "Labels.AutoCustomMarker";
@@ -460,14 +534,13 @@ static const char* AutoNameKey(AutoName scheme) {
 }
 
 std::string ResolveMarkerName(const MapMarker& marker) {
-    if (!marker.note.empty()) return marker.note;
+    if (!marker.note.empty()) return marker.note;   // user's own words win
     if (marker.autoName == AutoName::None) return {};
     return LocalizationManager::Format(AutoNameKey(marker.autoName), marker.autoNameNumber);
 }
 
 std::uint32_t NextAutoNameNumber(AutoName scheme) {
     std::uint32_t maxN = 0;
-
     for (const auto& m : MarkerManager::GetSingleton()->GetUserMarkers()) {
         if (m.autoName == scheme) maxN = (std::max)(maxN, m.autoNameNumber);
     }
@@ -526,6 +599,10 @@ std::uint32_t MarkerManager::AddMarker(MapMarker marker) {
         logger::warn("Cannot add marker: invalid autoName scheme");
         return 0;
     }
+    if (marker.origin > MarkerOrigin::InspectQuickMark) {
+        logger::warn("Cannot add marker: invalid origin");
+        return 0;
+    }
 
     const std::uint32_t id = AllocateMarkerIDLocked();
     if (id == 0) {
@@ -566,15 +643,17 @@ std::uint32_t MarkerManager::AddMarker(RE::FormID worldSpaceID, RE::FormID cellI
 std::uint32_t MarkerManager::AddAutoNamedMarker(RE::FormID worldSpaceID, RE::FormID cellID,
                                                const RE::NiPoint3& position,
                                                std::uint32_t iconType,
-                                               AutoName scheme, std::uint32_t number) {
+                                               AutoName scheme, std::uint32_t number,
+                                               MarkerOrigin origin) {
     MapMarker marker;
     marker.worldSpaceID = worldSpaceID;
     marker.cellID = cellID;
     marker.position = position;
     marker.iconType = iconType;
-    marker.note.clear();
+    marker.note.clear();  // empty note IS the auto-name signal
     marker.autoName = scheme;
     marker.autoNameNumber = number ? number : NextAutoNameNumber(scheme);
+    marker.origin = origin;
     marker.timestamp = std::chrono::duration_cast<std::chrono::seconds>(
                            std::chrono::system_clock::now().time_since_epoch())
                            .count();
@@ -587,6 +666,7 @@ bool MarkerManager::RemoveMarker(std::uint32_t id) {
         std::unique_lock lock(_mutex);
         auto it = std::remove_if(_markers.begin(), _markers.end(),
                                  [id](const MapMarker &m) { return m.id == id; });
+
         if (it != _markers.end()) {
             _markers.erase(it, _markers.end());
             removed = true;
@@ -636,13 +716,14 @@ std::vector<MapMarker> MarkerManager::GetUserMarkers() {
 std::vector<MapMarker> MarkerManager::GetMarkers() {
     std::unique_lock lock(_mutex);
     std::vector<MapMarker> out = _markers;
-
     if (_vanillaDest.active) {
         MapMarker m;
         m.id            = kVanillaDestId;
         m.worldSpaceID  = _vanillaDest.worldSpaceID;
         m.cellID        = _vanillaDest.cellID;
         m.position      = _vanillaDest.position;
+        // The raw name, no prefix. ResolveMarkerName returns note when non-empty, so
+        // every existing draw site prints the right text with no strip step.
         m.note          = _vanillaDest.name;
         m.iconType      = 0;
         m.timestamp     = 0;
@@ -655,12 +736,14 @@ std::vector<MapMarker> MarkerManager::GetMarkers() {
 
 void MarkerManager::SetDestination(std::uint32_t id, bool flag) {
     std::unique_lock lock(_mutex);
-
+    // A real marker taking the destination clears the vanilla record: the two
+    // kinds are mutually exclusive, or two destinations would draw at once.
     if (flag) _vanillaDest = {};
     for (auto &m : _markers) {
         if (m.id == id) {
             m.isDestination = flag;
         } else if (flag) {
+            // Single-destination rule: clear every other marker when setting.
             m.isDestination = false;
         }
     }
@@ -672,7 +755,8 @@ std::uint32_t MarkerManager::GetDestinationID() {
     for (const auto &m : _markers) {
         if (m.isDestination) return m.id;
     }
-
+    // Matches what GetMarkers() hands out: an active vanilla destination reports
+    // the reserved synthesized id, not 0.
     return _vanillaDest.active ? kVanillaDestId : 0;
 }
 
@@ -696,7 +780,6 @@ bool MarkerManager::SetVanillaDestination(const std::string& name,
     }
 
     std::unique_lock lock(_mutex);
-
     for (auto &m : _markers) {
         m.isDestination = false;
     }
@@ -717,7 +800,6 @@ bool MarkerManager::SetVanillaDestination(const std::string& name,
 
 bool MarkerManager::IsVanillaDestination(const std::string& name) const {
     std::unique_lock lock(_mutex);
-
     return _vanillaDest.active && _vanillaDest.name == name;
 }
 
@@ -846,15 +928,12 @@ std::vector<std::pair<RE::FormID, std::string>> MarkerManager::GetVanillaNotes()
     return out;
 }
 
-// ==========================================
-// SERIALIZATION
-// ==========================================
-
 void MarkerManager::OnGameSave(SKSE::SerializationInterface *serde) {
     if (!serde) return;
 
     std::unique_lock lock(_mutex);
 
+    // Invariant prevalidation before OpenRecord
     if (_markers.size() > kMaxSerializedEntries) {
         logger::error("Save aborted: marker count {} exceeds cap {}", _markers.size(), kMaxSerializedEntries);
         return;
@@ -883,6 +962,10 @@ void MarkerManager::OnGameSave(SKSE::SerializationInterface *serde) {
         }
         if (marker.autoName > AutoName::QuickMark) {
             logger::error("Save aborted: marker id {} has invalid autoName {}", marker.id, static_cast<std::uint8_t>(marker.autoName));
+            return;
+        }
+        if (marker.origin > MarkerOrigin::InspectQuickMark) {
+            logger::error("Save aborted: marker id {} has invalid origin {}", marker.id, static_cast<std::uint8_t>(marker.origin));
             return;
         }
     }
@@ -929,12 +1012,14 @@ void MarkerManager::OnGameSave(SKSE::SerializationInterface *serde) {
         return;
     }
 
+    // 1. Write Count
     const std::uint32_t count = static_cast<std::uint32_t>(_markers.size());
     if (!WriteChecked(serde, count)) {
         logger::error("Save failed: write marker count");
         return;
     }
 
+    // 2. Write Markers
     for (const auto &marker : _markers) {
         if (!WriteChecked(serde, marker.id) ||
             !WriteChecked(serde, marker.worldSpaceID) ||
@@ -946,24 +1031,34 @@ void MarkerManager::OnGameSave(SKSE::SerializationInterface *serde) {
             logger::error("Save failed: write marker id {}", marker.id);
             return;
         }
+
         const std::uint8_t destByte = marker.isDestination ? 1 : 0;
         if (!WriteChecked(serde, destByte)) {
             logger::error("Save failed: write marker destByte");
             return;
         }
+
         const std::uint8_t autoByte = static_cast<std::uint8_t>(marker.autoName);
         if (!WriteChecked(serde, autoByte) ||
             !WriteChecked(serde, marker.autoNameNumber)) {
             logger::error("Save failed: write marker autoName");
             return;
         }
+
+        const std::uint8_t originByte = static_cast<std::uint8_t>(marker.origin);
+        if (!WriteChecked(serde, originByte)) {
+            logger::error("Save failed: write marker origin");
+            return;
+        }
     }
 
+    // 3. Write Next ID
     if (!WriteChecked(serde, _nextID)) {
         logger::error("Save failed: write _nextID");
         return;
     }
 
+    // 4. Write Favorites
     const std::uint32_t favCount = static_cast<std::uint32_t>(_favorites.size());
     if (!WriteChecked(serde, favCount)) {
         logger::error("Save failed: write favCount");
@@ -980,6 +1075,7 @@ void MarkerManager::OnGameSave(SKSE::SerializationInterface *serde) {
         }
     }
 
+    // 5. Write Vanilla-marker notes
     const std::uint32_t noteCount = static_cast<std::uint32_t>(_vanillaNotes.size());
     if (!WriteChecked(serde, noteCount)) {
         logger::error("Save failed: write noteCount");
@@ -993,6 +1089,7 @@ void MarkerManager::OnGameSave(SKSE::SerializationInterface *serde) {
         }
     }
 
+    // 6. Write the vanilla destination (v6+ with v7 suffix)
     const std::uint8_t destPresent = _vanillaDest.active ? 1 : 0;
     if (!WriteChecked(serde, destPresent)) {
         logger::error("Save failed: write destPresent");
@@ -1006,6 +1103,7 @@ void MarkerManager::OnGameSave(SKSE::SerializationInterface *serde) {
             logger::error("Save failed: write destination prefix");
             return;
         }
+        // v7 suffix
         const std::uint8_t fromLocalDoorByte = _vanillaDest.fromLocalDoor ? 1 : 0;
         if (!WriteChecked(serde, _vanillaDest.sourceFormID) ||
             !WriteChecked(serde, fromLocalDoorByte)) {
@@ -1014,7 +1112,7 @@ void MarkerManager::OnGameSave(SKSE::SerializationInterface *serde) {
         }
     }
 
-    logger::info("Saved {} custom map markers (CMMK v{}).", count, kSerializationVersion);
+    logger::info("Saved {} custom markers (CMMK v{}).", count, kSerializationVersion);
 }
 
 void MarkerManager::OnGameLoad(SKSE::SerializationInterface *serde) {
@@ -1035,15 +1133,18 @@ void MarkerManager::OnGameLoad(SKSE::SerializationInterface *serde) {
         if (type == kSerializationSignature) {
             if (version < 1 || version > kSerializationVersion) {
                 logger::warn("Unsupported CMMK version {}.", version);
-                continue;
+                continue;  // GetNextRecordInfo skips this record's unread bytes.
             }
+
             LoadedMarkerState loaded;
             if (!ReadCMMKRecord(serde, version, length, loaded)) {
                 logger::error("Rejected malformed CMMK v{} record ({} bytes).", version, length);
                 continue;
             }
+
             loaded.savedNextID = RecoverNextIDHint(loaded.savedNextID, loaded.markers);
             NormalizeDestinationState(loaded);
+
             std::unique_lock lock(_mutex);
             _markers = std::move(loaded.markers);
             _favorites = std::move(loaded.favorites);
@@ -1056,7 +1157,7 @@ void MarkerManager::OnGameLoad(SKSE::SerializationInterface *serde) {
     }
 }
 
-void MarkerManager::OnRevert(SKSE::SerializationInterface* ) {
+void MarkerManager::OnRevert(SKSE::SerializationInterface* /*serde*/) {
     std::unique_lock lock(_mutex);
     _markers.clear();
     _favorites.clear();

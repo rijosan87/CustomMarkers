@@ -1,5 +1,3 @@
-// Hooks marker hover callbacks.
-
 #include "MarkerHoverHook.h"
 #include "MapMarkerRenderer.h"
 #include "MarkerManager.h"
@@ -18,11 +16,8 @@
 #include "ImGui/Renderer.h"
 #include <imgui.h>
 
-// STATUS (update when behavior changes; do NOT update CLAUDE.md for this):
-
 namespace {
     constexpr std::ptrdiff_t kHoveredMarkerOffset = 0x30558;
-
     constexpr REL::RelocationID kSetSelectedMarkerStringID{ 270681, 216427 };
     constexpr REL::RelocationID kFxDelegateInvokeID{ 80520, 82640 };
     constexpr REL::RelocationID kOnMouseDownID{ 52230, 53117 };
@@ -39,10 +34,10 @@ namespace {
     const char* g_setSelectedMarkerLiteral = nullptr;
 
     using UpdateHoveredMarkerFn = void(*)(RE::MapMenu*);
-    using FxDelegateInvokeFn    = void(*)(void* ,
-                                          const char* ,
-                                          void* ,
-                                          std::uint64_t );
+    using FxDelegateInvokeFn    = void(*)(void* /*movie*/,
+                                          const char* /*methodName*/,
+                                          void* /*args*/,
+                                          std::uint64_t /*reserved*/);
     using OnMouseDownFn         = void(*)(RE::MapMenu*);
 
     bool CtrlHeld() {
@@ -59,11 +54,13 @@ namespace {
 
     using GetValuesFn = std::uint32_t(*)(void* a_this, GFxValueRaw** a_values);
 
+    // Tracks last suppress state so we only log on transitions, not every frame.
     static bool s_lastSuppressState = false;
 
     void HookedFxDelegateInvoke(void* a_movie, const char* a_methodName,
                                 void* a_args, std::uint64_t a_reserved) {
         const bool isOurMethod = (a_methodName == g_setSelectedMarkerLiteral);
+
         if (isOurMethod && a_args) {
             const bool suppress = CtrlHeld() || MapLookRemapHook::IsTilting()
                                || InputHook::IsTextInputActive()
@@ -71,23 +68,32 @@ namespace {
                                || MapMarkerRenderer::GetSingleton()->IsCustomPinHovered()
                                || MapMarkerRenderer::GetSingleton()->CursorOverPanel()
                                || (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse);
+
             if (suppress) {
                 auto** vtbl = *reinterpret_cast<void***>(a_args);
                 auto getValues = reinterpret_cast<GetValuesFn>(vtbl[1]);
+
                 GFxValueRaw* values = nullptr;
                 std::uint32_t count = getValues(a_args, &values);
+
                 if (values) {
                     for (std::uint32_t i = 0; i < count; ++i) {
                         values[i].value       = nullptr;
-                        values[i].type        = 3;
+                        values[i].type        = 3; // kNumber
                         values[i].numberValue = -1.0;
                     }
                 } else {
                 }
             }
         }
+
         reinterpret_cast<FxDelegateInvokeFn>(g_fxInvokeTrampoline)(
             a_movie, a_methodName, a_args, a_reserved);
+    }
+
+    bool IsBCDCarriageMapReady(RE::MapMenu* a_menu) {
+        return a_menu && a_menu->uiMovie &&
+               a_menu->uiMovie->IsAvailable("_root.WorldMap.BCD__ClickSelectedMarker");
     }
 
     void HookedOnMouseDown(RE::MapMenu* a_menu) {
@@ -96,18 +102,23 @@ namespace {
             reinterpret_cast<OnMouseDownFn>(g_onMouseDownTrampoline)(a_menu);
             return;
         }
+
         if (MapMarkerRenderer::GetSingleton()->IsNoteDialogOpen() ||
             ImGuiRenderer::IsAnyPopupOpen() ||
             (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse)) {
             return;
         }
+
         if (auto removeId = MapMarkerRenderer::GetSingleton()->GetRemoveButtonTarget();
             removeId != 0) {
             MarkerManager::GetSingleton()->RemoveMarker(removeId);
             return;
         }
+
         if (auto destId = MapMarkerRenderer::GetSingleton()->GetDestButtonTarget();
             destId != 0) {
+            // Real markers only: the synthesized vanilla destination has no
+            // hover panel and must never be toggled through this path.
             auto markers = MarkerManager::GetSingleton()->GetUserMarkers();
             bool isCurrentlyDest = false;
             for (const auto& m : markers) {
@@ -116,25 +127,37 @@ namespace {
             MarkerManager::GetSingleton()->SetDestination(destId, !isCurrentlyDest);
             return;
         }
+
         if (auto editId = MapMarkerRenderer::GetSingleton()->GetEditButtonTarget();
             editId != 0) {
             MapMarkerRenderer::GetSingleton()->BeginEditMarker(editId);
             return;
         }
+
         if (MapMarkerRenderer::GetSingleton()->IsCustomPinHovered()) return;
+
         if (a_menu) {
             auto base = reinterpret_cast<std::uintptr_t>(a_menu);
             auto hoveredIdx = *reinterpret_cast<std::int32_t*>(base + kHoveredMarkerOffset);
             if (hoveredIdx >= 0) {
                 if (HoverImageRenderer::IsHoveredUndiscovered()) {
+                    const bool bcdReady = IsBCDCarriageMapReady(a_menu);
+                    logger::debug("[BCDCompat] undiscovered click | markerIndex={} | overrideReady={}",
+                                  hoveredIdx, bcdReady);
+                    if (bcdReady) {
+                        reinterpret_cast<OnMouseDownFn>(g_onMouseDownTrampoline)(a_menu);
+                    }
                     return;
                 }
+
                 PlaceMarkerHook::SuppressNextPlacement();
                 reinterpret_cast<OnMouseDownFn>(g_onMouseDownTrampoline)(a_menu);
                 return;
             }
         }
+
         if (MapMarkerRenderer::GetSingleton()->TryHandlePanelClick()) return;
+
         if (a_menu && MapMarkerRenderer::GetSingleton()->CursorOverPanel()) {
             auto base = reinterpret_cast<std::uintptr_t>(a_menu);
             *reinterpret_cast<std::int32_t*>(base + kHoveredMarkerOffset) = -1;
@@ -174,6 +197,8 @@ void MarkerHoverHook::Install() {
     logger::info("MarkerHoverHook installed | target={:X} | trampoline={:X}",
                  targetAddr, g_trampolineAddr);
 
+    // Resolve the runtime address of the ".rdata" literal "SetSelectedMarker"
+    // so the FxDelegate::Invoke detour can pointer-compare against it.
     REL::Relocation<const char*> stringLit{ kSetSelectedMarkerStringID };
     g_setSelectedMarkerLiteral = stringLit.get();
 

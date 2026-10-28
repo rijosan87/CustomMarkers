@@ -2,7 +2,7 @@
 # If you use CMake features from higher versions, update this to match.
 cmake_minimum_required(VERSION 3.21)
 # Set your project name. This will be the name of your SKSE .dll file.
-project(CustomMarkers VERSION 1.0.0 LANGUAGES CXX)
+project(CustomMarkers VERSION 1.3.1 LANGUAGES CXX)
 #
 # YOU DO NOT NEED TO EDIT ANYTHING BELOW HERE
 #
@@ -72,7 +72,7 @@ find_package(directxtex CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 # MINIMUM_SKSE_VERSION must be a full x.y.z triplet: the generator splits on "."
 # and a bare "0" (the default) emits REL::Version{ 0, , , 0 } - a syntax error.
-add_commonlibsse_plugin(${PROJECT_NAME} MINIMUM_SKSE_VERSION 0.0.0 SOURCES src/plugin.cpp src/MarkerManager.cpp src/MapMarkerRenderer.cpp src/LocalMapRenderer.cpp src/LocalMapClickHook.cpp src/MapHoverHook.cpp src/Settings.cpp src/LocalizationManager.cpp src/PlaceMarkerHook.cpp src/MarkerClickHook.cpp src/MarkerHoverHook.cpp src/MarkerFilterHook.cpp src/MapLookRemapHook.cpp src/CompassHook.cpp src/HUDMarkerHook.cpp src/ImGui/Renderer.cpp src/InputHook.cpp src/TextureManager.cpp src/BackgroundManager.cpp src/HoverImageRenderer.cpp src/PathTracker.cpp src/MinimapRenderer.cpp src/WorldBeaconRenderer.cpp src/LootBeamRenderer.cpp src/LookPinRenderer.cpp src/RenderTargetUpscaler.cpp src/EntityMarkerSource.cpp src/ActorMarkerSource.cpp src/ImGui/SettingsMenu.cpp src/FontManager.cpp src/MapStats.cpp src/QuestTracker.cpp src/InputHandler.cpp)# <--- specifies plugin.cpp
+add_commonlibsse_plugin(${PROJECT_NAME} MINIMUM_SKSE_VERSION 0.0.0 SOURCES src/AutomationTelemetry.cpp src/plugin.cpp src/MarkerManager.cpp src/MapMarkerRenderer.cpp src/LocalMapRenderer.cpp src/LocalMapClickHook.cpp src/MapHoverHook.cpp src/Settings.cpp src/LocalizationManager.cpp src/PlaceMarkerHook.cpp src/MarkerClickHook.cpp src/MarkerHoverHook.cpp src/MarkerFilterHook.cpp src/MapLookRemapHook.cpp src/CompassHook.cpp src/HUDMarkerHook.cpp src/ImGui/Renderer.cpp src/InputHook.cpp src/TextureManager.cpp src/BackgroundManager.cpp src/HoverImageRenderer.cpp src/PathTracker.cpp src/MinimapRenderer.cpp src/MinimapSnapshotTransition.cpp src/MinimapEntityTransition.cpp src/WorldBeaconRenderer.cpp src/LootBeamRenderer.cpp src/LootBeamDesignModern.cpp src/LootBeamDesignWisp.cpp src/LootBeamBlacklist.cpp src/TCCItemStatus.cpp src/LookPinRenderer.cpp src/RenderTargetUpscaler.cpp src/EntityMarkerSource.cpp src/ActorMarkerSource.cpp src/ImGui/SettingsMenu.cpp src/ImGui/SettingsMenuFramework.cpp src/FontManager.cpp src/MapStats.cpp src/QuestTracker.cpp src/InputHandler.cpp)# <--- specifies plugin.cpp
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23) # <--- use C++23 standard
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h) # <--- PCH.h is required!
 

@@ -1,5 +1,3 @@
-// Renders 3D light pillars and distance counters at destination pins.
-
 #include "PCH.h"
 #include "WorldBeaconRenderer.h"
 
@@ -13,6 +11,7 @@
 #include "MapDrawHelpers.h"
 #include "MapTheme.h"
 #include "FontManager.h"
+#include "UIScale.h"
 
 #include <RE/Skyrim.h>
 #include <SKSE/SKSE.h>
@@ -24,9 +23,89 @@
 #include <unordered_map>
 #include <vector>
 
-// STATUS:
-
 namespace {
+    template <typename AlphaAtFn>
+    void DrawDestinationWisp(ImDrawList* a_dl, const ImVec2& a_base, const ImVec2& a_tip,
+                             float a_baseWidth, float a_tipWidth,
+                             ImU32 a_core, ImU32 a_glow, float a_alpha,
+                             AlphaAtFn a_alphaAt) {
+        constexpr int kRows = 24;
+        constexpr float kRails[5] = { -1.0f, -0.32f, 0.0f, 0.32f, 1.0f };
+        const float dx = a_tip.x - a_base.x;
+        const float dy = a_tip.y - a_base.y;
+        const float length = std::hypot(dx, dy);
+        if (!a_dl || !std::isfinite(length) || length < 1.0f) return;
+        const float nx = -dy / length;
+        const float ny = dx / length;
+        const float bend = (std::min)(length * 0.025f, UIScale::Px(6.0f));
+        if (Settings::GetSingleton()->beaconVerboseLog) {
+            static bool s_profileLogged = false;
+            if (!s_profileLogged) {
+                SKSE::log::info(
+                    "Beacon WISP profile: shape=shallow-bends lengthPx={:.1f} bendCapPx={:.1f} halfWidthBase={:.1f} "
+                    "halfWidthTip={:.1f} alpha={:.3f} profile25={:.3f} profile50={:.3f} profile75={:.3f}",
+                    length, bend, a_baseWidth, a_tipWidth, a_alpha,
+                    a_alphaAt(0.25f), a_alphaAt(0.50f), a_alphaAt(0.75f));
+                s_profileLogged = true;
+            }
+        }
+        const ImVec2 uv = ImGui::GetDrawListSharedData()->TexUvWhitePixel;
+        ImVec2 spine[kRows];
+        float spineAlpha[kRows];
+        a_dl->PrimReserve((kRows - 1) * 4 * 6, kRows * 5);
+        const unsigned int first = a_dl->_VtxCurrentIdx;
+        for (int row = 0; row < kRows; ++row) {
+            const float f = static_cast<float>(row) / static_cast<float>(kRows - 1);
+            const float wave = std::sin(f * 3.14159265f);
+            // Three shallow lobes alternate sides. Phase warping breaks their
+            // regular spacing; the envelope returns smoothly to both anchors.
+            const float phase = 3.0f * 3.14159265f * f +
+                                0.35f * std::sin(2.0f * 3.14159265f * f);
+            const float offset = (row == 0 || row == kRows - 1)
+                ? 0.0f : bend * wave * std::sin(phase);
+            spine[row] = ImVec2(a_base.x + dx * f + nx * offset,
+                               a_base.y + dy * f + ny * offset);
+            const float width = a_baseWidth + (a_tipWidth - a_baseWidth) * f;
+            const float alpha = std::clamp(a_alpha * a_alphaAt(f), 0.0f, 1.0f);
+            const float filament = std::clamp(1.0f - f / 0.33f, 0.0f, 1.0f);
+            // Keep a dim line above the bright foot so the upper bends read as
+            // a continuous strand instead of disappearing into the soft mesh.
+            spineAlpha[row] = alpha * (0.40f + 0.60f * filament * filament);
+            const ImU32 colors[5] = {
+                MapDraw::WithAlpha(a_glow, 0.0f),
+                MapDraw::WithAlpha(a_glow, 0.20f * alpha),
+                MapDraw::WithAlpha(a_core, 0.30f * alpha),
+                MapDraw::WithAlpha(a_glow, 0.20f * alpha),
+                MapDraw::WithAlpha(a_glow, 0.0f)
+            };
+            for (int rail = 0; rail < 5; ++rail) {
+                const float across = kRails[rail] * width;
+                a_dl->PrimWriteVtx(ImVec2(spine[row].x + nx * across,
+                                         spine[row].y + ny * across), uv, colors[rail]);
+            }
+        }
+        for (int row = 0; row < kRows - 1; ++row) {
+            const unsigned int lower = first + row * 5;
+            const unsigned int upper = lower + 5;
+            for (int rail = 0; rail < 4; ++rail) {
+                a_dl->PrimWriteIdx(static_cast<ImDrawIdx>(lower + rail));
+                a_dl->PrimWriteIdx(static_cast<ImDrawIdx>(lower + rail + 1));
+                a_dl->PrimWriteIdx(static_cast<ImDrawIdx>(upper + rail + 1));
+                a_dl->PrimWriteIdx(static_cast<ImDrawIdx>(lower + rail));
+                a_dl->PrimWriteIdx(static_cast<ImDrawIdx>(upper + rail + 1));
+                a_dl->PrimWriteIdx(static_cast<ImDrawIdx>(upper + rail));
+            }
+        }
+        // Finish the reserved mesh before AddLine can grow the draw buffers.
+        for (int row = 0; row < kRows - 1; ++row) {
+            const float alpha = 0.5f * (spineAlpha[row] + spineAlpha[row + 1]);
+            if (alpha > 0.0f) {
+                a_dl->AddLine(spine[row], spine[row + 1],
+                    MapDraw::WithAlpha(IM_COL32(255, 255, 255, 220), alpha), UIScale::Px(1.2f));
+            }
+        }
+    }
+
     constexpr float kGroundProbeUp   = 8192.0f;
     constexpr float kGroundProbeDown = 32768.0f;
 
@@ -35,14 +114,21 @@ namespace {
         if (!a_cell) return false;
         auto* world = a_cell->GetbhkWorld();
         if (!world) return false;
+
         RE::bhkPickData pick;
         const float scale = RE::bhkWorld::GetWorldScale();
+
         const RE::NiPoint3 from{ a_x, a_y, a_startZ };
         const RE::NiPoint3 to{ a_x, a_y, a_startZ - a_castDown };
         pick.rayInput.from = from * scale;
         pick.rayInput.to   = to * scale;
+
+        // kLOS collides with terrain and statics but ignores actors, so the
+        // player standing on the spot cannot become the "ground".
         pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kLOS);
+
         if (!world->PickObject(pick) || !pick.rayOutput.HasHit()) return false;
+
         a_outZ = a_startZ - a_castDown * pick.rayOutput.hitFraction;
         return true;
     }
@@ -52,18 +138,22 @@ namespace {
         if (!a_cell) return false;
         auto* world = a_cell->GetbhkWorld();
         if (!world) return false;
+
         RE::NiPoint3 dir = a_target - a_camPos;
         const float len = dir.Length();
         if (len < 1e-3f) return false;
         dir /= len;
+
         constexpr float kSurfaceEpsilon = 24.0f;
         const float castLen = (std::max)(len - kSurfaceEpsilon, 1.0f);
+
         RE::bhkPickData pick;
         const float scale = RE::bhkWorld::GetWorldScale();
         const RE::NiPoint3 to = a_camPos + dir * castLen;
         pick.rayInput.from = a_camPos * scale;
         pick.rayInput.to   = to * scale;
         pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kLOS);
+
         return world->PickObject(pick) && pick.rayOutput.HasHit();
     }
 
@@ -72,13 +162,14 @@ namespace {
         float y = 0.0f;
         float groundZ = 0.0f;
         RE::FormID cellID = 0;
-        bool  hit = false;
+        bool  hit = false;      // false = raycast missed, using the fallback
     };
     std::unordered_map<std::uint32_t, GroundCacheEntry> g_groundCache;
 
     float ResolveGroundZ(const MapMarker& a_marker, RE::TESObjectCELL* a_cell,
                          const RE::NiPoint3& a_playerPos) {
         const RE::FormID cellID = a_cell ? a_cell->GetFormID() : 0;
+
         if (auto it = g_groundCache.find(a_marker.id); it != g_groundCache.end()) {
             const auto& e = it->second;
             if (e.cellID == cellID &&
@@ -87,14 +178,28 @@ namespace {
                 return e.groundZ;
             }
         }
+
         GroundCacheEntry entry;
         entry.x = a_marker.position.x;
         entry.y = a_marker.position.y;
         entry.cellID = cellID;
+
+        if (a_marker.origin == MarkerOrigin::LookAndPin) {
+            entry.groundZ = a_marker.position.z;
+            entry.hit = true;
+            g_groundCache[a_marker.id] = entry;
+            if (Settings::GetSingleton()->beaconVerboseLog) {
+                SKSE::log::info("Beacon[{}] groundZ=STORED_LOOK_PIN {:.1f} (xy {:.1f},{:.1f} cell {:08X})",
+                                a_marker.id, entry.groundZ, entry.x, entry.y, cellID);
+            }
+            return entry.groundZ;
+        }
+
         auto* tes = RE::TES::GetSingleton();
         float landZ = 0.0f;
         const bool isExterior = a_cell && a_cell->IsExteriorCell();
         const bool hasLand = isExterior && tes && tes->GetLandHeight(a_marker.position, landZ);
+
         if (hasLand) {
             constexpr float kLandProbeUp   = 1500.0f;
             constexpr float kLandProbeDown = 2000.0f;
@@ -109,6 +214,8 @@ namespace {
                         a_marker.id, z, a_marker.position.x, a_marker.position.y, landZ, startZ, cellID);
                 }
             } else {
+                // Havok collision missed (e.g. distant cell outside active grid) or pure terrain:
+                // landZ is already the exact ground altitude.
                 entry.groundZ = landZ;
                 entry.hit = true;
                 if (Settings::GetSingleton()->beaconVerboseLog) {
@@ -116,6 +223,8 @@ namespace {
                 }
             }
         } else {
+            // Interior or exterior edge without landscape heightmap:
+            // Cast downward from above player altitude.
             constexpr float kFallbackProbeUp   = 1000.0f;
             constexpr float kFallbackProbeDown = 4000.0f;
             const float startZ = a_playerPos.z + kFallbackProbeUp;
@@ -129,6 +238,7 @@ namespace {
                         a_marker.id, z, a_marker.position.x, a_marker.position.y, startZ, a_playerPos.z, cellID);
                 }
             } else {
+                // Last resort: follow player altitude
                 entry.groundZ = a_playerPos.z;
                 entry.hit = false;
                 SKSE::log::warn(
@@ -137,6 +247,7 @@ namespace {
                     a_marker.id, a_playerPos.z, a_marker.position.x, a_marker.position.y, cellID);
             }
         }
+
         g_groundCache[a_marker.id] = entry;
         return entry.groundZ;
     }
@@ -147,16 +258,18 @@ namespace {
     }
 
     constexpr int   kOcclusionSamples   = 5;
-
     constexpr float kHeightRampFarMult  = 8.0f;
-    constexpr float kOccludedAlphaScale = 0.22f;
-
+    constexpr float kOccludedAlphaScale = 0.22f;   // how dark a blocked sample goes
     constexpr float kPinOccFullDimUnits = 11000.0f;
-    constexpr float kOcclusionFadeSecs  = 0.18f;
+    constexpr float kOcclusionFadeSecs  = 0.18f;   // ease so nothing snaps
     constexpr float kOcclusionInterval  = 0.25f;
 
     struct OcclusionState {
+        // 0 = fully visible, 1 = fully blocked. One eased value per sample point,
+        // index 0 at the base running to kOcclusionSamples-1 at the pillar top.
         float   blocked[kOcclusionSamples]{};
+        // Raw cast result the eased value chases. Held between casts because the
+        // cadence is slower than the frame rate.
         float   occTarget[kOcclusionSamples]{};
         double  lastCast = 0.0;
         bool    seeded   = false;
@@ -178,6 +291,7 @@ namespace {
                                           double a_now, float a_dt,
                                           BeaconPerfFrame* a_perf) {
         auto& st = g_occlusion[a_markerID];
+
         if (!st.seeded || (a_now - st.lastCast) >= kOcclusionInterval) {
             st.lastCast = a_now;
             std::chrono::steady_clock::time_point rayStart{};
@@ -193,6 +307,8 @@ namespace {
                 };
                 const float target = IsPointOccluded(a_cell, a_camPos, p) ? 1.0f : 0.0f;
                 st.occTarget[i] = target;
+                // Seed directly on the first cast: easing up from 0 would flash
+                // the beacon fully bright for ~0.18s before it settled dim.
                 if (!st.seeded) st.blocked[i] = target;
             }
             if (a_perf) {
@@ -202,6 +318,7 @@ namespace {
             }
             st.seeded = true;
         }
+
         const float rate = std::clamp(a_dt / kOcclusionFadeSecs, 0.0f, 1.0f);
         for (int i = 0; i < kOcclusionSamples; ++i) {
             const float step = std::clamp(st.occTarget[i] - st.blocked[i], -rate, rate);
@@ -218,47 +335,47 @@ namespace {
         return a_st.blocked[i0] + (a_st.blocked[i1] - a_st.blocked[i0]) * frac;
     }
 
-    ImVec2 ClampToEdge(const ImVec2& a_pt, bool a_inFront, float a_pad, float& a_outAngle) {
+    ImVec2 ClampToEdge(const ImVec2& a_pt, float a_pad, float& a_outAngle) {
         const ImVec2 disp = ImGui::GetIO().DisplaySize;
         const ImVec2 c(disp.x * 0.5f, disp.y * 0.5f);
-        float dx = a_pt.x - c.x;
-        float dy = a_pt.y - c.y;
-        if (!a_inFront) {
-            dx = -dx;
-            dy = -dy;
-        }
+        const float dx = a_pt.x - c.x;
+        const float dy = a_pt.y - c.y;
         const float len = std::sqrt(dx * dx + dy * dy);
         if (len < 1e-4f) {
             a_outAngle = 0.0f;
             return c;
         }
         a_outAngle = std::atan2(dy, dx);
+        // Scale the centre-to-point ray out to whichever axis hits the padded rect first.
         const float maxX = c.x - a_pad;
         const float maxY = c.y - a_pad;
         const float scale = (std::min)(maxX / std::fabs(dx), maxY / std::fabs(dy));
         return ImVec2(c.x + dx * scale, c.y + dy * scale);
     }
 
-    void DrawEdgeIndicator(ImDrawList* dl, const ImVec2& pt, float angle, float size, ImU32 col) {
+    void DrawEdgeIndicator(ImDrawList* dl, const ImVec2& pt, float angle, float size, ImU32 col, float borderWidth = 1.2f) {
         const float half = size * 0.5f;
         const ImVec2 p0(pt.x + std::cos(angle) * size, pt.y + std::sin(angle) * size);
         const ImVec2 p1(pt.x + std::cos(angle + 2.35f) * half, pt.y + std::sin(angle + 2.35f) * half);
         const ImVec2 p2(pt.x + std::cos(angle - 2.35f) * half, pt.y + std::sin(angle - 2.35f) * half);
+
         const auto a = static_cast<std::uint8_t>((col >> IM_COL32_A_SHIFT) & 0xFF);
         dl->AddTriangleFilled(p0, p1, p2, col);
-        dl->AddTriangle(p0, p1, p2, IM_COL32(0, 0, 0, static_cast<int>(a * 0.8f)), 1.2f);
+        dl->AddTriangle(p0, p1, p2, IM_COL32(0, 0, 0, static_cast<int>(a * 0.8f)), borderWidth);
     }
 }
 
 void WorldBeaconRenderer::Draw() {
     auto* settings = Settings::GetSingleton();
-    if (!settings || !settings->navBeaconVisible) {
+    if (!settings || (!settings->navBeaconVisible && !settings->navBeaconClearOnArrival)) {
         _beaconFade = 0.0f;
         return;
     }
 
     auto* ui = RE::UI::GetSingleton();
     if (!ui || MenuUtils::ShouldBlockOverlay() || PartySheetState::ShouldHideOverlay()) {
+        // Snap, don't fade: fading out over a menu that opened instantly would
+        // leave the beacon visible for the first frames of the menu.
         _beaconFade = 0.0f;
         return;
     }
@@ -271,11 +388,9 @@ void WorldBeaconRenderer::Draw() {
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) return;
 
+
     auto* parentCell = player->GetParentCell();
     if (!parentCell) return;
-
-    auto* cam = RE::Main::WorldRootCamera();
-    if (!cam) return;
 
     const RE::NiPoint3 playerPos = player->GetPosition();
     const bool isExterior = parentCell->IsExteriorCell();
@@ -283,24 +398,75 @@ void WorldBeaconRenderer::Draw() {
     const RE::FormID currentWorldID = isExterior && currentWorld ? currentWorld->GetFormID() : 0;
     const RE::FormID currentCellID = parentCell->GetFormID();
 
+    // Find destination markers (custom or vanilla destination pseudo-marker).
     std::vector<MapMarker> activeDestinations;
     const auto allMarkers = MarkerManager::GetSingleton()->GetMarkers();
     for (const auto& m : allMarkers) {
         if (!m.isDestination) continue;
+
+        // Space check
         bool spaceMatches = false;
         if (isExterior) {
             if (m.worldSpaceID != 0 && currentWorld && CompassHook::WorldMatches(currentWorld, m.worldSpaceID)) {
                 spaceMatches = true;
             }
         } else {
+            // Interior: marker in same cell, or marker has worldSpaceID==0 with matching cellID
             if (m.worldSpaceID == 0 && m.cellID == currentCellID) {
                 spaceMatches = true;
             }
         }
+
         if (spaceMatches) {
             activeDestinations.push_back(m);
         }
     }
+
+    if (settings->navBeaconClearOnArrival) {
+        bool arrived = false;
+        for (const auto& m : activeDestinations) {
+            const float dx = m.position.x - playerPos.x;
+            const float dy = m.position.y - playerPos.y;
+            const float distUnits = std::sqrt(dx * dx + dy * dy);
+            if (distUnits > settings->navBeaconFadeNearUnits) continue;
+
+            const bool temporary =
+                m.id != kVanillaDestId &&
+                (m.origin == MarkerOrigin::LookAndPin ||
+                 m.origin == MarkerOrigin::InspectQuickMark);
+
+            auto* manager = MarkerManager::GetSingleton();
+            const bool removed = temporary && manager->RemoveMarker(m.id);
+            if (!removed) {
+                manager->ClearDestination();
+            }
+            g_groundCache.erase(m.id);
+            g_occlusion.erase(m.id);
+
+            if (settings->beaconVerboseLog) {
+                SKSE::log::info(
+                    "Beacon ARRIVAL: id={} origin={} action={} dist={:.1f}m radius={:.1f}m",
+                    m.id, static_cast<std::uint32_t>(m.origin),
+                    removed ? "REMOVE_TEMPORARY_MARKER" : "CLEAR_DESTINATION",
+                    distUnits / Settings::kUnitsPerMeter,
+                    settings->navBeaconFadeNearUnits / Settings::kUnitsPerMeter);
+            }
+
+            arrived = true;
+            break;
+        }
+        if (arrived) activeDestinations.clear();
+    }
+
+    // Arrival is destination state, not a rendering side effect. Keep processing
+    // it when Show Beacons is off, then stop before camera/projection work.
+    if (!settings->navBeaconVisible) {
+        _beaconFade = 0.0f;
+        return;
+    }
+
+    auto* cam = RE::Main::WorldRootCamera();
+    if (!cam) return;
 
     const float dt = ImGui::GetIO().DeltaTime;
     constexpr float kFadeDuration = 0.25f;
@@ -342,101 +508,133 @@ void WorldBeaconRenderer::Draw() {
     const ImVec2 screenCenter(disp.x * 0.5f, disp.y * 0.5f);
     const float timeSec = std::chrono::duration<float>(std::chrono::steady_clock::now().time_since_epoch()).count();
     const double nowSec = static_cast<double>(timeSec);
-    constexpr float kPad = 45.0f;
+    const float edgePad = UIScale::Px(45.0f);
 
     const RE::NiPoint3 camPos = cam->world.translate;
 
     for (const auto& m : activeDestinations) {
+        // Horizontal distance only (Decision 3)
         const float dx = m.position.x - playerPos.x;
         const float dy = m.position.y - playerPos.y;
         const float distUnits = std::sqrt(dx * dx + dy * dy);
         const int distMeters = static_cast<int>(distUnits / Settings::kUnitsPerMeter + 0.5f);
+
+        // Proximity fade-out below threshold (Decision 9)
         float proximityAlpha = 1.0f;
         if (distUnits < settings->navBeaconFadeNearUnits) {
             proximityAlpha = (std::max)(0.0f, distUnits / settings->navBeaconFadeNearUnits);
         }
+
         const float baseAlpha = _beaconFade * proximityAlpha;
         if (baseAlpha <= 0.01f) continue;
+
         const float baseZ = ResolveGroundZ(m, parentCell, playerPos);
         const float rampFar = (std::max)(settings->navBeaconFadeNearUnits * kHeightRampFarMult, 1.0f);
         const float rampT   = std::clamp(distUnits / rampFar, 0.0f, 1.0f);
         const float nearScale = std::clamp(settings->navBeaconNearScale, 0.05f, 1.0f);
         const float heightScale = nearScale + (1.0f - nearScale) * rampT;
+
         const RE::NiPoint3 basePos{ m.position.x, m.position.y, baseZ };
         const RE::NiPoint3 topPos{ m.position.x, m.position.y,
                                    baseZ + settings->navBeaconPillarHeight * heightScale };
+
         ImVec2 baseScr, topScr;
         bool baseInFront = false, topInFront = false;
         const bool baseProj = ProjectWorld(cam, basePos, baseScr, baseInFront);
         const bool topProj  = ProjectWorld(cam, topPos, topScr, topInFront);
         baseInFront = baseInFront && baseProj;
         topInFront  = topInFront && topProj;
+
         if (!topProj && !baseProj) continue;
+
+        // Screen-center aim fade (Decision 8): fade down if aiming directly at the beacon
         float aimAlpha = 1.0f;
         if (topInFront) {
             const float toCenterX = topScr.x - screenCenter.x;
             const float toCenterY = topScr.y - screenCenter.y;
             const float distToCenter = std::sqrt(toCenterX * toCenterX + toCenterY * toCenterY);
-            constexpr float kAimFadeRadius = 140.0f;
-            if (distToCenter < kAimFadeRadius) {
-                aimAlpha = std::clamp(distToCenter / kAimFadeRadius, 0.15f, 1.0f);
+            const float aimFadeRadius = UIScale::Px(140.0f);
+            if (distToCenter < aimFadeRadius) {
+                aimAlpha = std::clamp(distToCenter / aimFadeRadius, 0.15f, 1.0f);
             }
         }
+
         const float finalAlpha = baseAlpha * aimAlpha;
         const auto alphaByte = static_cast<std::uint8_t>(std::clamp(finalAlpha * 255.0f, 0.0f, 255.0f));
         if (alphaByte == 0) continue;
+
         float segT0 = 0.0f, segT1 = 1.0f;
         const bool beamUsable = baseProj && topProj && baseInFront && topInFront;
         const bool isOnScreen = beamUsable &&
                                 MapDraw::SegmentInRect(baseScr, topScr,
-                                                       kPad, kPad, disp.x - kPad, disp.y - kPad,
+                                                       edgePad, edgePad, disp.x - edgePad, disp.y - edgePad,
                                                        segT0, segT1);
+
         float tPin = 1.0f;
         ImVec2 pinScr = topScr;
         if (isOnScreen) {
+            // The beam runs base -> top, so the smaller Y (higher on screen) is
+            // whichever end of the clipped range sits nearer the top.
             tPin = (topScr.y <= baseScr.y) ? segT1 : segT0;
             pinScr = ImVec2(baseScr.x + (topScr.x - baseScr.x) * tPin,
                             baseScr.y + (topScr.y - baseScr.y) * tPin);
         }
+
+        // Already the clean display name: the vanilla destination is a
+        // synthesized entry whose note carries no internal prefix.
         std::string label = ResolveMarkerName(m);
+
         if (isOnScreen) {
             if (perfLog) {
                 ++perfFrame.visibleCount;
             }
+
+            // Edge indicators do not use depth, so only visible pillars spend
+            // Havok rays or advance their occlusion easing state.
             const OcclusionState& occState = UpdateOcclusion(
                 m.id, parentCell, camPos, basePos, topPos, nowSec, dt,
                 perfLog ? &perfFrame : nullptr);
+
+            // Destination palette (Cyan / Sky-Blue luminous hierarchy)
             constexpr ImU32 coreCol = IM_COL32(215, 240, 255, 255);
             constexpr ImU32 glowCol = IM_COL32(110, 200, 255, 255);
             constexpr ImU32 haloCol = IM_COL32( 50, 140, 255, 255);
-            const float badgeR = static_cast<float>(settings->navBeaconPinSize) * 0.75f;
+
+            const float badgeR = UIScale::Px(static_cast<float>(settings->navBeaconPinSize) * 0.75f);
             const ImVec2 iconAt = pinScr;
+
+            // Draw from the lower clipped endpoint to the diamond's bottom point.
+            // Ending at pinScr would run the filament through the icon.
             const float tBeamBase = (topScr.y <= baseScr.y) ? segT0 : segT1;
             const ImVec2 beamBase(
                 baseScr.x + (topScr.x - baseScr.x) * tBeamBase,
                 baseScr.y + (topScr.y - baseScr.y) * tBeamBase);
             const ImVec2 beamTip(iconAt.x, iconAt.y + badgeR);
-            constexpr float kBeamBaseW = 18.0f;
-            constexpr float kBeamTopW = 6.0f;
-            const float beamBaseW = kBeamBaseW + (kBeamTopW - kBeamBaseW) * tBeamBase;
-            const float beamTipW = kBeamBaseW + (kBeamTopW - kBeamBaseW) * tPin;
+
+            constexpr float kBeamBaseW = 7.0f;
+            constexpr float kBeamTopW = 3.0f;
+            const float beamBaseWMax = UIScale::Px(kBeamBaseW);
+            const float beamTopWMax  = UIScale::Px(kBeamTopW);
+            const float beamBaseW = beamBaseWMax + (beamTopWMax - beamBaseWMax) * tBeamBase;
+            const float beamTipW = beamBaseWMax + (beamTopWMax - beamBaseWMax) * tPin;
+
             const float fullBeamLen = std::sqrt(
                 (topScr.x - baseScr.x) * (topScr.x - baseScr.x) +
                 (topScr.y - baseScr.y) * (topScr.y - baseScr.y));
-            constexpr float kBottomFadePx = 16.0f;
+            const float bottomFadePx = UIScale::Px(16.0f);
             const bool baseIsGround = segT0 <= 0.001f;
             const float fadeSpanT = (baseIsGround && fullBeamLen > 1.0f)
-                ? std::clamp(kBottomFadePx / fullBeamLen, 0.0f, 0.45f)
+                ? std::clamp(bottomFadePx / fullBeamLen, 0.0f, 0.45f)
                 : 0.0f;
-            constexpr int kPillarSteps = 24;
-            MapDraw::DrawFeatheredBeam(
-                dl, beamBase, beamTip, kPillarSteps,
+
+            DrawDestinationWisp(
+                dl, beamBase, beamTip,
                 beamBaseW, beamTipW,
-                coreCol, glowCol, haloCol,
+                coreCol, glowCol,
                 finalAlpha,
                 [&](float f) {
                     const float t = tBeamBase + (tPin - tBeamBase) * f;
-                    const float fadeTop = (1.0f - t) * (1.0f - t) * (1.0f - t);
+                    const float fadeTop = 1.0f - t;
                     float foot = 1.0f;
                     if (fadeSpanT > 1e-4f) {
                         const float k = std::clamp((t - segT0) / fadeSpanT, 0.0f, 1.0f);
@@ -446,7 +644,9 @@ void WorldBeaconRenderer::Draw() {
                     const float occMul = 1.0f - occ * (1.0f - kOccludedAlphaScale);
                     return fadeTop * foot * occMul;
                 });
+
             const float pinOcc  = SampleOcclusion(occState, tPin);
+
             const float pinReliefNear = kHeightRampFarMult * settings->navBeaconFadeNearUnits;
             const float pinReliefT = std::clamp(
                 (distUnits - pinReliefNear) / (std::max)(1.0f, kPinOccFullDimUnits - pinReliefNear),
@@ -455,10 +655,13 @@ void WorldBeaconRenderer::Draw() {
             const float pinMul  = 1.0f - pinOcc * (1.0f - kOccludedAlphaScale) * pinRelief;
             const float pinAlpha  = finalAlpha * pinMul;
             const auto  pinAlphaB = static_cast<std::uint8_t>(std::clamp(pinAlpha * 255.0f, 0.0f, 255.0f));
+
             MapDraw::DrawDiamondBadgeFrame(
                 dl, iconAt, badgeR, coreCol, glowCol, haloCol, pinAlpha,
-                3.0f, 0.50f,
-                3.0f);
+                /*glowPadding=*/UIScale::Px(3.0f), /*innerAlpha=*/0.50f,
+                /*innerMinRadius=*/UIScale::Px(3.0f));
+
+            // Destination icon inside badge
             auto* pinSrv = TextureManager::GetIconByName("destination");
             if (pinSrv) {
                 const float iconHalf = badgeR * 0.65f;
@@ -467,41 +670,80 @@ void WorldBeaconRenderer::Draw() {
                                     ImVec2(iconAt.x + iconHalf, iconAt.y + iconHalf),
                                     MapDraw::WithAlpha(IM_COL32_WHITE, pinAlpha));
             }
+
+            // Fonts and text sizes
+            ImFont* labelFont = FontManager::GetSingleton()->GetHeadingFont();
+            if (!labelFont) labelFont = ImGui::GetFont();
+            const float labelSize = labelFont->FontSize * UIScale::Font() *
+                std::clamp(settings->titleScale, 0.5f, 3.0f);
+
+            ImFont* distFont = FontManager::GetSingleton()->GetBaseFont();
+            if (!distFont) distFont = ImGui::GetFont();
+            const float distSize = distFont->FontSize * UIScale::Font() *
+                std::clamp(settings->bodyScale, 0.5f, 3.0f);
+
+            const float shadowOffset = UIScale::Px(1.0f);
+
+            // Distance & label text under the diamond badge
             const std::string distStr = std::to_string(distMeters) + "m";
-            const ImVec2 distSz = ImGui::CalcTextSize(distStr.c_str());
-            const float textY = iconAt.y + badgeR + 5.0f;
+            const ImVec2 distSz = distFont->CalcTextSizeA(distSize, FLT_MAX, 0.0f, distStr.c_str());
+            const float textY = iconAt.y + badgeR + UIScale::Px(5.0f);
+
             if (!label.empty()) {
-                const ImVec2 labelSz = ImGui::CalcTextSize(label.c_str());
+                const ImVec2 labelSz = labelFont->CalcTextSizeA(labelSize, FLT_MAX, 0.0f, label.c_str());
                 const float labelX = iconAt.x - labelSz.x * 0.5f;
-                dl->AddText(ImVec2(labelX + 1.0f, textY + 1.0f), IM_COL32(0, 0, 0, pinAlphaB), label.c_str());
-                dl->AddText(ImVec2(labelX, textY), IM_COL32(245, 235, 210, pinAlphaB), label.c_str());
-                const float distY = textY + labelSz.y + 1.0f;
+                dl->AddText(labelFont, labelSize, ImVec2(labelX + shadowOffset, textY + shadowOffset), IM_COL32(0, 0, 0, pinAlphaB), label.c_str());
+                dl->AddText(labelFont, labelSize, ImVec2(labelX, textY), IM_COL32(245, 235, 210, pinAlphaB), label.c_str());
+
+                const float distY = textY + labelSz.y + UIScale::Px(1.0f);
                 const float distX = iconAt.x - distSz.x * 0.5f;
-                dl->AddText(ImVec2(distX + 1.0f, distY + 1.0f), IM_COL32(0, 0, 0, pinAlphaB), distStr.c_str());
-                dl->AddText(ImVec2(distX, distY), IM_COL32(110, 210, 255, pinAlphaB), distStr.c_str());
+                dl->AddText(distFont, distSize, ImVec2(distX + shadowOffset, distY + shadowOffset), IM_COL32(0, 0, 0, pinAlphaB), distStr.c_str());
+                dl->AddText(distFont, distSize, ImVec2(distX, distY), IM_COL32(110, 210, 255, pinAlphaB), distStr.c_str());
             } else {
                 const float distX = iconAt.x - distSz.x * 0.5f;
-                dl->AddText(ImVec2(distX + 1.0f, textY + 1.0f), IM_COL32(0, 0, 0, pinAlphaB), distStr.c_str());
-                dl->AddText(ImVec2(distX, textY), IM_COL32(110, 210, 255, pinAlphaB), distStr.c_str());
+                dl->AddText(distFont, distSize, ImVec2(distX + shadowOffset, textY + shadowOffset), IM_COL32(0, 0, 0, pinAlphaB), distStr.c_str());
+                dl->AddText(distFont, distSize, ImVec2(distX, textY), IM_COL32(110, 210, 255, pinAlphaB), distStr.c_str());
             }
         } else if (settings->navBeaconEdgeIndicator) {
             if (perfLog) {
                 ++perfFrame.edgeIndicatorCount;
             }
+
             float angle = 0.0f;
-            const ImVec2 clampedPos = ClampToEdge(topScr, topInFront, kPad, angle);
-            DrawEdgeIndicator(dl, clampedPos, angle, 16.0f, IM_COL32(110, 210, 255, alphaByte));
-            const ImVec2 iconPos(clampedPos.x - std::cos(angle) * 18.0f,
-                                 clampedPos.y - std::sin(angle) * 18.0f);
+            const ImVec2 clampedPos = ClampToEdge(topScr, edgePad, angle);
+
+            // Keep the direction cue small; the destination pin owns the badge.
+            const float arrowSize = UIScale::Px(10.0f);
+            const float arrowBorderW = UIScale::Px(1.2f);
+            DrawEdgeIndicator(dl, clampedPos, angle, arrowSize, IM_COL32(110, 210, 255, alphaByte), arrowBorderW);
+
+            // Pin glyph slightly offset inward along the ray
+            const float inwardOffset = UIScale::Px(32.0f);
+            const ImVec2 iconPos(clampedPos.x - std::cos(angle) * inwardOffset,
+                                 clampedPos.y - std::sin(angle) * inwardOffset);
+
             auto* pinSrv = TextureManager::GetIconByName("destination");
-            const float pinScale = (static_cast<float>(settings->navBeaconPinSize) * 0.85f) / (2.0f * MapDraw::kPinRadius);
+            const float pinScale = UIScale::Px(static_cast<float>(settings->navBeaconPinSize) * 0.85f) / (2.0f * MapDraw::kPinRadius);
+            const float pinHalfSize = 16.0f * pinScale;
+            const float backingRadius = pinHalfSize + UIScale::Px(3.0f);
+            dl->AddCircleFilled(iconPos, backingRadius, IM_COL32(8, 20, 29, static_cast<int>(alphaByte * 0.88f)));
+            dl->AddCircle(iconPos, backingRadius, IM_COL32(110, 210, 255, static_cast<int>(alphaByte * 0.8f)),
+                          0, UIScale::Px(1.0f));
             MapDraw::DrawPin(dl, iconPos.x, iconPos.y, 0.0f, 0, pinSrv, pinScale,
-                             Settings::GetSingleton()->PinTintCol(), finalAlpha);
+                             Settings::GetSingleton()->PinTintCol(), finalAlpha, UIScale::Master());
+
+            // Distance sits below the backed pin, clear of its lower edge.
+            ImFont* distFont = FontManager::GetSingleton()->GetBaseFont();
+            if (!distFont) distFont = ImGui::GetFont();
+            const float distSize = distFont->FontSize * UIScale::Font() *
+                std::clamp(settings->bodyScale, 0.5f, 3.0f);
+            const float shadowOffset = UIScale::Px(1.0f);
+
             const std::string distStr = std::to_string(distMeters) + "m";
-            const ImVec2 distSz = ImGui::CalcTextSize(distStr.c_str());
-            const ImVec2 textPos(iconPos.x - distSz.x * 0.5f, iconPos.y + 12.0f);
-            dl->AddText(ImVec2(textPos.x + 1.0f, textPos.y + 1.0f), IM_COL32(0, 0, 0, alphaByte), distStr.c_str());
-            dl->AddText(ImVec2(textPos.x, textPos.y), IM_COL32(110, 210, 255, alphaByte), distStr.c_str());
+            const ImVec2 distSz = distFont->CalcTextSizeA(distSize, FLT_MAX, 0.0f, distStr.c_str());
+            const ImVec2 textPos(iconPos.x - distSz.x * 0.5f, iconPos.y + backingRadius + UIScale::Px(5.0f));
+            dl->AddText(distFont, distSize, ImVec2(textPos.x + shadowOffset, textPos.y + shadowOffset), IM_COL32(0, 0, 0, alphaByte), distStr.c_str());
+            dl->AddText(distFont, distSize, textPos, IM_COL32(110, 210, 255, alphaByte), distStr.c_str());
         }
     }
 
@@ -515,6 +757,7 @@ void WorldBeaconRenderer::Draw() {
         static double s_drawTimeUs = 0.0;
         static double s_worstDrawTimeUs = 0.0;
         static double s_rayTimeUs = 0.0;
+
         const double drawTimeUs = std::chrono::duration<double, std::micro>(
             std::chrono::steady_clock::now() - drawStart).count();
         ++s_frameCount;
@@ -525,6 +768,7 @@ void WorldBeaconRenderer::Draw() {
         s_drawTimeUs += drawTimeUs;
         s_worstDrawTimeUs = (std::max)(s_worstDrawTimeUs, drawTimeUs);
         s_rayTimeUs += perfFrame.rayTimeUs;
+
         if (s_frameCount >= kPerfReportFrames) {
             const double meanDrawUs = s_drawTimeUs / static_cast<double>(s_frameCount);
             const double meanRayUs = s_rayCount > 0
@@ -533,10 +777,11 @@ void WorldBeaconRenderer::Draw() {
             SKSE::log::info(
                 "WorldBeacons::Draw PERF: mean={:.1f}us worst={:.1f}us over {} active frames "
                 "(maxActive={} visible={} edgeIndicators={} rays={} rayMean={:.1f}us "
-                "meshRows=24 meshVertices=120 meshIndices=552)",
+                "meshRows=24 meshVertices=120 meshIndices=552 shape=shallow-bends)",
                 meanDrawUs, s_worstDrawTimeUs, s_frameCount,
                 s_maxActive, s_visibleCount, s_edgeIndicatorCount,
                 s_rayCount, meanRayUs);
+
             s_frameCount = 0;
             s_maxActive = 0;
             s_visibleCount = 0;

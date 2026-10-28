@@ -1,5 +1,3 @@
-// Raycasts crosshair position to place custom markers directly in the 3D world.
-
 #include "PCH.h"
 #include "LookPinRenderer.h"
 
@@ -12,6 +10,8 @@
 #include "InputHandler.h"
 #include "MapDrawHelpers.h"
 #include "MapTheme.h"
+#include "FontManager.h"
+#include "UIScale.h"
 
 #include <RE/Skyrim.h>
 #include <SKSE/SKSE.h>
@@ -24,12 +24,10 @@
 #include <string>
 #include <string_view>
 
-// STATUS:
-
 namespace {
     constexpr float kRayLength     = 40000.0f;
     constexpr float kLandStepSize  = 512.0f;
-    constexpr float kLandStepStart = 2000.0f;
+    constexpr float kLandStepStart = 2000.0f;   // skip the player's own footing
     constexpr float kFadeDuration  = 0.25f;
 
     constexpr float kMaxTagRange = 150000.0f;
@@ -41,6 +39,7 @@ namespace {
     constexpr float kRayStartOffset = 60.0f;
     constexpr float kSelfHitReject  = 80.0f;
 
+    // Reticle geometry, screen pixels.
     constexpr float kReticleRadius   = 14.0f;
     constexpr float kReticleTickIn   = 6.0f;
     constexpr float kReticleTickOut  = 11.0f;
@@ -51,8 +50,10 @@ namespace {
     constexpr ImU32 kReticleBad  = IM_COL32(220,  80,  80, 255);
     constexpr ImU32 kReticleShadow = IM_COL32(0, 0, 0, 200);
 
+    // Written on the Present thread, read by InputHook on the input thread.
     std::atomic<bool> g_active{ false };
 
+    // Scale an ImU32's alpha by a 0..1 fade.
     ImU32 FadeCol(ImU32 a_col, float a_fade) {
         const float a = static_cast<float>((a_col >> IM_COL32_A_SHIFT) & 0xFF) * a_fade;
         return (a_col & ~IM_COL32_A_MASK) |
@@ -61,13 +62,15 @@ namespace {
 
     bool CameraForward(RE::PlayerCharacter* a_player, RE::NiPoint3& a_outFwd) {
         if (!a_player) return false;
+
         const float yaw = a_player->GetAngleZ();
-        // cameraRoot's rotation is unusable as a whole (see the STATUS block: it
+
         float sinPitch = 0.0f;
         if (auto* pcam = RE::PlayerCamera::GetSingleton(); pcam && pcam->cameraRoot) {
             sinPitch = std::clamp(pcam->cameraRoot->world.rotate.entry[2][1], -1.0f, 1.0f);
         }
         const float cosPitch = std::sqrt((std::max)(0.0f, 1.0f - sinPitch * sinPitch));
+
         a_outFwd = RE::NiPoint3{ cosPitch * std::sin(yaw),
                                  cosPitch * std::cos(yaw),
                                  sinPitch };
@@ -79,13 +82,17 @@ namespace {
         if (!a_cell) return false;
         auto* world = a_cell->GetbhkWorld();
         if (!world) return false;
+
         RE::bhkPickData pick;
         const float scale = RE::bhkWorld::GetWorldScale();
+
         const RE::NiPoint3 to = a_from + a_fwd * kRayLength;
         pick.rayInput.from = a_from * scale;
         pick.rayInput.to   = to * scale;
         pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kLOS);
+
         if (!world->PickObject(pick) || !pick.rayOutput.HasHit()) return false;
+
         a_outHit = a_from + a_fwd * (kRayLength * pick.rayOutput.hitFraction);
         return true;
     }
@@ -94,14 +101,18 @@ namespace {
                          RE::NiPoint3& a_outHit) {
         auto* tes = RE::TES::GetSingleton();
         if (!tes) return false;
+
         float prevZ = 0.0f;
         bool  havePrev = false;
         RE::NiPoint3 prevP{};
+
         for (float d = kLandStepStart; d <= kMaxTagRange; ) {
             const RE::NiPoint3 p = a_from + a_fwd * d;
             float landZ = 0.0f;
             if (tes->GetLandHeight(p, landZ)) {
                 if (p.z <= landZ) {
+                    // Refine between the last airborne sample and this one so a
+                    // coarse far step does not overshoot the slope by ~4000 units.
                     if (havePrev) {
                         RE::NiPoint3 lo = prevP, hi = p;
                         for (int i = 0; i < 8; ++i) {
@@ -156,7 +167,6 @@ void LookPinRenderer::Draw() {
         ui && !MenuUtils::ShouldBlockOverlay() &&
         !PartySheetState::ShouldHideOverlay() &&
         !ui->GameIsPaused() &&
-
         !(Settings::GetSingleton()->hideInBeastForm && BeastForm::IsBeastForm()) &&
         player && cell && cam && cell->IsExteriorCell();
 
@@ -186,18 +196,24 @@ void LookPinRenderer::Draw() {
         constexpr float kEyeHeight = 120.0f;
         RE::NiPoint3 camPos = player->GetPosition();
         camPos.z += kEyeHeight;
+
         camPos += fwd * kRayStartOffset;
         _targetIsLand = false;
+
         RE::NiPoint3 havokPos{};
         const bool havokHit = RaycastForward(cell, camPos, fwd, havokPos);
         const float havokDist = havokHit ? (havokPos - camPos).Length() : 0.0f;
+
         RE::NiPoint3 landPos{};
         bool landHit = false;
         if (!havokHit || havokDist < kNearHitReject) {
             landHit = MarchLandHeight(camPos, fwd, landPos);
         }
+
         const float landDist = landHit ? (landPos - camPos).Length() : 0.0f;
+
         const bool havokUsable = havokHit && havokDist > kSelfHitReject;
+
         if (havokUsable && (!landHit || landDist <= havokDist + kNearHitReject)) {
             _targetPos = havokPos;
             _hasTarget = true;
@@ -206,6 +222,7 @@ void LookPinRenderer::Draw() {
             _targetIsLand = true;
             _hasTarget = true;
         }
+
         if (!_hasTarget && _lastHitValid &&
             (nowSecEarly - _lastHitTime) < kTargetHoldSec &&
             (fwd.x * _lastHitFwd.x + fwd.y * _lastHitFwd.y + fwd.z * _lastHitFwd.z) > 0.9995f) {
@@ -219,6 +236,7 @@ void LookPinRenderer::Draw() {
             _lastHitTime = nowSecEarly;
             _lastHitValid = true;
         }
+
         static int s_lastRayState = -1;
         const int rayState = !_hasTarget ? 0 : (_targetIsLand ? 1 : 2);
         if (rayState != s_lastRayState) {
@@ -233,6 +251,7 @@ void LookPinRenderer::Draw() {
                 _targetPos.x, _targetPos.y, _targetPos.z,
                 camPos.x, camPos.y, camPos.z);
         }
+
         {
             static int s_lastDir = INT_MIN;
             const float fwdYaw = std::atan2(fwd.x, fwd.y) * 57.2957795f;
@@ -256,27 +275,32 @@ void LookPinRenderer::Draw() {
         SKSE::log::info("LookPin press: active={} hasTarget={} isLand={} -> {}",
                         _active, _hasTarget, _targetIsLand,
                         !_active ? "ENTER" : (_hasTarget ? "PLACE" : "no-target"));
+
         if (!_active) {
             _active = true;
         } else if (_hasTarget) {
             auto* ws = player->GetWorldspace();
             auto* mm = MarkerManager::GetSingleton();
             const std::uint32_t n = NextPinNumber();
+
             MapMarker marker;
             marker.worldSpaceID = ws ? ws->GetFormID() : 0;
             marker.cellID = cell->GetFormID();
             marker.position = _targetPos;
             marker.iconType = 0;
-            marker.note.clear();
+            marker.note.clear();               // empty note = auto-named
             marker.autoName = AutoName::Pinned;
             marker.autoNameNumber = n;
+            marker.origin = MarkerOrigin::LookAndPin;
             marker.timestamp = std::chrono::duration_cast<std::chrono::seconds>(
                                    std::chrono::system_clock::now().time_since_epoch())
                                    .count();
             const std::uint32_t assignedId = mm->AddMarker(marker);
+
             if (assignedId != 0) {
                 mm->SetDestination(assignedId, true);
             }
+
             SKSE::log::info(
                 "LookPin: placed #{} id={} at {:.1f},{:.1f},{:.1f} (source={}) ws={:08X} cell={:08X} [destination]",
                 n, assignedId, _targetPos.x, _targetPos.y, _targetPos.z,
@@ -305,46 +329,65 @@ void LookPinRenderer::Draw() {
     const ImU32  tint       = FadeCol(_hasTarget ? kReticleOk : kReticleBad, _fade);
     const ImU32  shadowTint = FadeCol(kReticleShadow, _fade);
 
-    dl->AddCircle(ImVec2(centre.x + 1.0f, centre.y + 1.0f), kReticleRadius, shadowTint, 32, kReticleThick);
-    dl->AddCircle(centre, kReticleRadius, tint, 32, kReticleThick);
+    const float reticleRadius = UIScale::Px(kReticleRadius);
+    const float tickIn        = UIScale::Px(kReticleTickIn);
+    const float tickOut       = UIScale::Px(kReticleTickOut);
+    const float reticleThick  = UIScale::Px(kReticleThick);
+    const float shadowOffset  = UIScale::Px(1.0f);
+
+    // 1. Reticle: ring + 4 ticks at screen centre. Drawn over a 1px-offset dark
+    //    copy so it stays readable against snow and sky.
+    dl->AddCircle(ImVec2(centre.x + shadowOffset, centre.y + shadowOffset), reticleRadius, shadowTint, 32, reticleThick);
+    dl->AddCircle(centre, reticleRadius, tint, 32, reticleThick);
     for (int i = 0; i < 4; ++i) {
-        const float ang = static_cast<float>(i) * 1.5707963f;
+        const float ang = static_cast<float>(i) * 1.5707963f;   // 90 deg steps
         const float cx = std::cos(ang);
         const float sy = std::sin(ang);
-        dl->AddLine(ImVec2(centre.x + cx * kReticleTickIn,  centre.y + sy * kReticleTickIn),
-                    ImVec2(centre.x + cx * kReticleTickOut, centre.y + sy * kReticleTickOut),
-                    tint, kReticleThick);
+        dl->AddLine(ImVec2(centre.x + cx * tickIn,  centre.y + sy * tickIn),
+                    ImVec2(centre.x + cx * tickOut, centre.y + sy * tickOut),
+                    tint, reticleThick);
     }
 
     if (_hasTarget) {
         ImVec2 pinPos;
         bool inFront = false;
         if (MapDraw::ProjectWorldPoint(cam, _targetPos, pinPos, inFront) && inFront) {
-            dl->AddCircleFilled(pinPos, kGhostPinRadius, FadeCol(tint, 0.55f), 20);
-            dl->AddCircle(pinPos, kGhostPinRadius, tint, 20, 2.0f);
-            dl->AddLine(ImVec2(pinPos.x, pinPos.y - kGhostPinRadius),
-                        ImVec2(pinPos.x, pinPos.y - kGhostPinRadius * 2.4f), tint, 2.0f);
+            const float ghostRadius  = UIScale::Px(kGhostPinRadius);
+            const float ghostOutline = UIScale::Px(2.0f);
+            const float ghostStemLen = ghostRadius * 2.4f;
+            dl->AddCircleFilled(pinPos, ghostRadius, FadeCol(tint, 0.55f), 20);
+            dl->AddCircle(pinPos, ghostRadius, tint, 20, ghostOutline);
+            dl->AddLine(ImVec2(pinPos.x, pinPos.y - ghostRadius),
+                        ImVec2(pinPos.x, pinPos.y - ghostStemLen), tint, ghostOutline);
         }
     }
 
-    const float labelY = centre.y + kReticleRadius + 8.0f;
+    // Text font and size
+    ImFont* font = FontManager::GetSingleton()->GetBaseFont();
+    if (!font) font = ImGui::GetFont();
+    const float fontSize = font->FontSize * UIScale::Font() *
+        std::clamp(settings->bodyScale, 0.5f, 3.0f);
+
+    const float labelY = centre.y + reticleRadius + UIScale::Px(8.0f);
     if (_hasTarget) {
         const RE::NiPoint3 playerPos = player->GetPosition();
         const float dx = _targetPos.x - playerPos.x;
         const float dy = _targetPos.y - playerPos.y;
         const float meters = std::sqrt(dx * dx + dy * dy) / Settings::kUnitsPerMeter;
+
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%.0f m", meters);
-        const ImVec2 sz = ImGui::CalcTextSize(buf);
-        dl->AddText(ImVec2(centre.x - sz.x * 0.5f + 1.0f, labelY + 1.0f), shadowTint, buf);
-        dl->AddText(ImVec2(centre.x - sz.x * 0.5f, labelY), tint, buf);
+        const ImVec2 sz = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, buf);
+        dl->AddText(font, fontSize, ImVec2(centre.x - sz.x * 0.5f + shadowOffset, labelY + shadowOffset), shadowTint, buf);
+        dl->AddText(font, fontSize, ImVec2(centre.x - sz.x * 0.5f, labelY), tint, buf);
     }
 
+    // 4. "No target" after a commit that had nothing to place on.
     if (nowSec < _noTargetMsgUntil) {
         const char* msg = "No target";
-        const ImVec2 sz = ImGui::CalcTextSize(msg);
-        const float y = labelY + ImGui::GetTextLineHeight() + 2.0f;
-        dl->AddText(ImVec2(centre.x - sz.x * 0.5f + 1.0f, y + 1.0f), shadowTint, msg);
-        dl->AddText(ImVec2(centre.x - sz.x * 0.5f, y), FadeCol(kReticleBad, _fade), msg);
+        const ImVec2 sz = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, msg);
+        const float y = labelY + fontSize + UIScale::Px(2.0f);
+        dl->AddText(font, fontSize, ImVec2(centre.x - sz.x * 0.5f + shadowOffset, y + shadowOffset), shadowTint, msg);
+        dl->AddText(font, fontSize, ImVec2(centre.x - sz.x * 0.5f, y), FadeCol(kReticleBad, _fade), msg);
     }
 }

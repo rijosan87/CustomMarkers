@@ -8,7 +8,30 @@ Custom Markers is an SKSE plugin for Skyrim Special Edition and Anniversary Edit
 - **Local & Interior Maps**: Interior marker support, direct door navigation, and dungeon path breadcrumb tracking.
 - **World Beacons & Loot Beams**: In-world 3D destination beacons, rarity-colored loot pillars for containers/items, and Look-and-Pin world placement.
 - **Navigation Overlay**: HUD glance mini-radar and full-screen dungeon inspect mode with actor and interactive entity tracking.
-- **Settings & Persistence**: In-game ImGui settings menu, cosave persistence, and multi-language support.
+- **Settings & Persistence**: In-game ImGui settings menu (also exposed through SKSE Menu Framework), master interface scale, cosave persistence, and multi-language support.
+
+---
+
+## Loot Beam Blacklist
+
+Loot beams can be suppressed for containers, exact references, cells, and locations through plain-text lists in `Data/SKSE/Plugins/CMMBlacklist/`:
+
+- `lootbeam_blacklist.ini`: the base list.
+- `<Name>_lootbeam_blacklist.ini`: companion lists for other mods. Files only add entries.
+
+Each line is `PluginName|0xLocalFormID`. Empty lines and `;` or `#` comments are ignored. The entry resolves to one of four record types:
+
+- `CONT`: every placed reference using that container base.
+- `REFR`: one exact placed reference.
+- `CELL`: one exact cell.
+- `LCTN`: a location and all of its child locations.
+
+```ini
+; NobleChestDrawers01 (Wardrobe)
+Skyrim.esm|0x000C2A05
+```
+
+The lists are read once at game start. Missing plugins and unresolved forms are skipped silently.
 
 ---
 
