@@ -20,8 +20,9 @@ namespace {
     constexpr std::uintptr_t kMarkerArrayOffset = 0x30470;
     constexpr std::size_t    kMarkerStride      = 0x38;
 
+    // +0x30480 on all runtimes; +0x30478 is the BSTArray capacity.
     inline std::ptrdiff_t MarkerCountOffset() {
-        return REL::Relocate<std::ptrdiff_t>(0x30480, 0x30478);
+        return 0x30480;
     }
 
     struct MarkerEntry {

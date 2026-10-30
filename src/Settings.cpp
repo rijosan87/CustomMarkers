@@ -158,6 +158,7 @@ void Settings::Load() {
 
     listShowOverview = (ini.GetLongValue("ListPanel", "ShowOverview", listShowOverview ? 1L : 0L) != 0);
     listShowActiveQuests = (ini.GetLongValue("ListPanel", "ShowActiveQuests", listShowActiveQuests ? 1L : 0L) != 0);
+    listShowCompanions = (ini.GetLongValue("ListPanel", "ShowCompanions", listShowCompanions ? 1L : 0L) != 0);
 
     // Clamped on read: a stale index from an INI written by a build with more
     // tabs would index past the end of the tab table.
@@ -180,6 +181,18 @@ void Settings::Load() {
     statCardOffsetX = static_cast<std::int32_t>(ini.GetLongValue("StatCard", "OffsetX", statCardOffsetX));
     statCardOffsetY = static_cast<std::int32_t>(ini.GetLongValue("StatCard", "OffsetY", statCardOffsetY));
     statCardShowDetails = (ini.GetLongValue("StatCard", "ShowDetails", statCardShowDetails ? 1L : 0L) != 0);
+    statCardShowType = (ini.GetLongValue("StatCard", "ShowType", statCardShowType ? 1L : 0L) != 0);
+    statCardShowHold = (ini.GetLongValue("StatCard", "ShowHold", statCardShowHold ? 1L : 0L) != 0);
+    statCardShowDistance = (ini.GetLongValue("StatCard", "ShowDistance", statCardShowDistance ? 1L : 0L) != 0);
+    statCardShowBounty = (ini.GetLongValue("StatCard", "ShowBounty", statCardShowBounty ? 1L : 0L) != 0);
+    statCardShowCleared = (ini.GetLongValue("StatCard", "ShowCleared", statCardShowCleared ? 1L : 0L) != 0);
+    statCardShowBoss = (ini.GetLongValue("StatCard", "ShowBoss", statCardShowBoss ? 1L : 0L) != 0);
+    statCardShowQuests = (ini.GetLongValue("StatCard", "ShowQuests", statCardShowQuests ? 1L : 0L) != 0);
+    statCardShowServices = (ini.GetLongValue("StatCard", "ShowServices", statCardShowServices ? 1L : 0L) != 0);
+    statCardShowPlayerHome = (ini.GetLongValue("StatCard", "ShowPlayerHome", statCardShowPlayerHome ? 1L : 0L) != 0);
+    statCardShowSpouse = (ini.GetLongValue("StatCard", "ShowSpouse", statCardShowSpouse ? 1L : 0L) != 0);
+    statCardShowCompanions = (ini.GetLongValue("StatCard", "ShowCompanions", statCardShowCompanions ? 1L : 0L) != 0);
+    statCardDistanceUnits = std::clamp(static_cast<std::int32_t>(ini.GetLongValue("StatCard", "DistanceUnits", statCardDistanceUnits)), 0, 1);
 
     navGlanceInteriorVisible = (ini.GetLongValue("NavigationOverlay", "GlanceInteriorVisible", navGlanceInteriorVisible ? 1L : 0L) != 0);
     navGlanceExteriorVisible = (ini.GetLongValue("NavigationOverlay", "GlanceExteriorVisible", navGlanceExteriorVisible ? 1L : 0L) != 0);
@@ -425,7 +438,8 @@ void Settings::Load() {
     clearedBadgeSize = std::clamp(static_cast<float>(ini.GetLongValue("Markers", "ClearedSize", static_cast<long>(clearedBadgeSize * 100.0f + 0.5f))) / 100.0f, 1.0f, 12.0f);
     ReadColor4Hex(ini, "Markers", "ClearedColor", "ClearedColor", clearedBadgeColorR, clearedBadgeColorG, clearedBadgeColorB, clearedBadgeColorA);
     markerImageEnabled = (ini.GetLongValue("Markers", "ImageEnabled", markerImageEnabled ? 1L : 0L) != 0);
-    markerImageWidth = std::clamp(static_cast<float>(ini.GetLongValue("Markers", "ImageWidth", static_cast<long>(markerImageWidth * 100.0f + 0.5f))) / 100.0f, 0.25f, 1.0f);
+    // Old ImageWidth was a fraction; not migrated, it would read as a px minimum.
+    markerImageMinWidth = std::clamp(static_cast<int>(ini.GetLongValue("Markers", "ImageMinWidth", markerImageMinWidth)), 0, 800);
     markerImageAlpha = std::clamp(static_cast<float>(ini.GetLongValue("Markers", "ImageAlpha", static_cast<long>(markerImageAlpha * 100.0f + 0.5f))) / 100.0f, 0.0f, 1.0f);
     markerHoverOffsetX = static_cast<std::int32_t>(ini.GetLongValue("Markers", "HoverOffsetX", markerHoverOffsetX));
     markerHoverOffsetY = static_cast<std::int32_t>(ini.GetLongValue("Markers", "HoverOffsetY", markerHoverOffsetY));
@@ -492,6 +506,7 @@ void Settings::Save() {
     ini.SetLongValue("ListPanel", "Visible", listPanelVisible ? 1L : 0L);
     ini.SetLongValue("ListPanel", "ShowOverview", listShowOverview ? 1L : 0L);
     ini.SetLongValue("ListPanel", "ShowActiveQuests", listShowActiveQuests ? 1L : 0L);
+    ini.SetLongValue("ListPanel", "ShowCompanions", listShowCompanions ? 1L : 0L);
     ini.SetLongValue("ListPanel", "ActiveTab", listActiveTab);
     ini.SetLongValue("ListPanel", "PosX", listPanelPosX);
     ini.SetLongValue("ListPanel", "PosY", listPanelPosY);
@@ -513,6 +528,18 @@ void Settings::Save() {
     ini.SetLongValue("StatCard", "OffsetX", statCardOffsetX);
     ini.SetLongValue("StatCard", "OffsetY", statCardOffsetY);
     ini.SetLongValue("StatCard", "ShowDetails", statCardShowDetails ? 1L : 0L);
+    ini.SetLongValue("StatCard", "ShowType", statCardShowType ? 1L : 0L);
+    ini.SetLongValue("StatCard", "ShowHold", statCardShowHold ? 1L : 0L);
+    ini.SetLongValue("StatCard", "ShowDistance", statCardShowDistance ? 1L : 0L);
+    ini.SetLongValue("StatCard", "ShowBounty", statCardShowBounty ? 1L : 0L);
+    ini.SetLongValue("StatCard", "ShowCleared", statCardShowCleared ? 1L : 0L);
+    ini.SetLongValue("StatCard", "ShowBoss", statCardShowBoss ? 1L : 0L);
+    ini.SetLongValue("StatCard", "ShowQuests", statCardShowQuests ? 1L : 0L);
+    ini.SetLongValue("StatCard", "ShowServices", statCardShowServices ? 1L : 0L);
+    ini.SetLongValue("StatCard", "ShowPlayerHome", statCardShowPlayerHome ? 1L : 0L);
+    ini.SetLongValue("StatCard", "ShowSpouse", statCardShowSpouse ? 1L : 0L);
+    ini.SetLongValue("StatCard", "ShowCompanions", statCardShowCompanions ? 1L : 0L);
+    ini.SetLongValue("StatCard", "DistanceUnits", statCardDistanceUnits);
 
     ini.SetLongValue("NavigationOverlay", "GlanceInteriorVisible", navGlanceInteriorVisible ? 1L : 0L);
     ini.SetLongValue("NavigationOverlay", "GlanceExteriorVisible", navGlanceExteriorVisible ? 1L : 0L);
@@ -696,7 +723,8 @@ void Settings::Save() {
     ini.SetLongValue("Markers", "ClearedSize", static_cast<long>(clearedBadgeSize * 100.0f + 0.5f));
     WriteColor4Hex(ini, "Markers", "ClearedColor", clearedBadgeColorR, clearedBadgeColorG, clearedBadgeColorB, clearedBadgeColorA);
     ini.SetLongValue("Markers", "ImageEnabled", markerImageEnabled ? 1L : 0L);
-    ini.SetLongValue("Markers", "ImageWidth", static_cast<long>(markerImageWidth * 100.0f + 0.5f));
+    ini.SetLongValue("Markers", "ImageMinWidth", markerImageMinWidth);
+    ini.Delete("Markers", "ImageWidth");
     ini.SetLongValue("Markers", "ImageAlpha", static_cast<long>(markerImageAlpha * 100.0f + 0.5f));
     ini.SetLongValue("Markers", "HoverOffsetX", markerHoverOffsetX);
     ini.SetLongValue("Markers", "HoverOffsetY", markerHoverOffsetY);

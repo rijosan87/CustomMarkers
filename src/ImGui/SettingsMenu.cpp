@@ -534,10 +534,13 @@ namespace SettingsMenu {
             ImGui::SliderInt(LocalizationManager::Get("Settings.Width").c_str(), &settings->listPanelWidth, 200, 600);
             ImGui::SliderInt(LocalizationManager::Get("Settings.MinHeightPct").c_str(), &settings->listPanelMinHeightPct, 0, 95, "%d%%");
             ImGui::SliderInt(LocalizationManager::Get("Settings.MaxHeightPct").c_str(), &settings->listPanelMaxHeightPct, 30, 95, "%d%%");
-            // Overview-tab sub-block toggles. Both live on the Overview tab; off
+            // Overview-tab sub-block toggles. All three live on the Overview tab; off
             // also skips that block's per-frame Refresh(), not just its draw.
             ImGui::Checkbox(LocalizationManager::Get("Settings.ShowOverview").c_str(), &settings->listShowOverview);
-            ImGui::SameLine();
+            if (settings->listShowOverview) {
+                ImGui::SameLine();
+                ImGui::Checkbox(LocalizationManager::Get("Settings.ShowCompanions").c_str(), &settings->listShowCompanions);
+            }
             ImGui::Checkbox(LocalizationManager::Get("Settings.ShowActiveQuests").c_str(), &settings->listShowActiveQuests);
 
             ImGui::Spacing();
@@ -578,6 +581,28 @@ namespace SettingsMenu {
 
     static void PanelStatCard(Settings* settings) {
         ImGui::Checkbox(LocalizationManager::Get("Settings.ShowMeta").c_str(), &settings->statCardShowDetails);
+        ImGui::Indent();
+        ImGui::BeginDisabled(!settings->statCardShowDetails);
+        const FlowItem rowItems[] = {
+            { LocalizationManager::Get("Settings.StatCardRowType"),       &settings->statCardShowType },
+            { LocalizationManager::Get("Settings.StatCardRowHold"),       &settings->statCardShowHold },
+            { LocalizationManager::Get("Settings.StatCardRowDistance"),   &settings->statCardShowDistance },
+            { LocalizationManager::Get("Settings.StatCardRowBounty"),     &settings->statCardShowBounty },
+            { LocalizationManager::Get("Settings.StatCardRowCleared"),    &settings->statCardShowCleared },
+            { LocalizationManager::Get("Settings.StatCardRowBoss"),       &settings->statCardShowBoss },
+            { LocalizationManager::Get("Settings.StatCardRowQuests"),     &settings->statCardShowQuests },
+            { LocalizationManager::Get("Settings.StatCardRowServices"),   &settings->statCardShowServices },
+            { LocalizationManager::Get("Settings.StatCardRowPlayerHome"), &settings->statCardShowPlayerHome },
+            { LocalizationManager::Get("Settings.StatCardRowSpouse"),     &settings->statCardShowSpouse },
+            { LocalizationManager::Get("Settings.StatCardRowCompanions"), &settings->statCardShowCompanions },
+        };
+        CheckboxFlow(rowItems, 11);
+        const std::string unitMetric   = LocalizationManager::Get("Settings.DistanceUnitsMetric");
+        const std::string unitImperial = LocalizationManager::Get("Settings.DistanceUnitsImperial");
+        const char* distanceUnits[] = { unitMetric.c_str(), unitImperial.c_str() };
+        ImGui::Combo(LocalizationManager::Get("Settings.DistanceUnits").c_str(), &settings->statCardDistanceUnits, distanceUnits, IM_ARRAYSIZE(distanceUnits));
+        ImGui::EndDisabled();
+        ImGui::Unindent();
         ImGui::Spacing();
         SectionLabel(LocalizationManager::Get("Settings.SectionVanillaCardPlacement").c_str());
         // Direction the card sits from the hovered VANILLA marker. Offsets nudge
@@ -1011,8 +1036,7 @@ namespace SettingsMenu {
     }
 
     static void PanelMarkerImages(Settings* settings) {
-        ImGui::SliderFloat((LocalizationManager::Get("Settings.Width") + "##markerimg").c_str(), &settings->markerImageWidth,
-                           0.25f, 1.0f, "%.2f");
+        ImGui::SliderInt((LocalizationManager::Get("Settings.ImageMinWidth") + "##markerimg").c_str(), &settings->markerImageMinWidth, 0, 800, "%d px");
         ImGui::SliderFloat((LocalizationManager::Get("Settings.Opacity") + "##markerimg").c_str(), &settings->markerImageAlpha,
                            0.0f, 1.0f, "%.2f");
     }

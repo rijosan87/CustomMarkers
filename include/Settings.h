@@ -59,10 +59,11 @@ public:
     // Hand-drawn panel has no ImGui window, so drag is tracked off MenuCursor.
     std::int32_t listPanelPosX = 1530;
     std::int32_t listPanelPosY = 60;
-    // Overview-tab sub-block toggles. Both live on the Overview tab; off also
+    // Overview-tab sub-block toggles. All three live on the Overview tab; off also
     // skips that block's per-frame Refresh(), not just its draw.
     bool         listShowOverview     = true;
     bool         listShowActiveQuests = true;
+    bool         listShowCompanions   = true;
     std::int32_t listActiveTab            = 0;
     std::int32_t listPanelMinHeightPct    = 35;   // % of screen height
     std::int32_t listPanelMaxHeightPct    = 70;   // % of screen height
@@ -85,6 +86,20 @@ public:
     // Controls the Type, Hold, Bounty, and Cleared rows on vanilla marker hovers.
     // The marker name, note, and image remain independent.
     bool         statCardShowDetails = true;
+    // Per-row toggles under Show Meta; statCardShowDetails is the master.
+    bool         statCardShowType       = true;
+    bool         statCardShowHold       = true;
+    bool         statCardShowDistance   = true;
+    bool         statCardShowBounty     = true;
+    bool         statCardShowCleared    = true;
+    bool         statCardShowBoss       = true;
+    bool         statCardShowQuests     = true;
+    bool         statCardShowServices   = true;
+    bool         statCardShowPlayerHome = true;
+    bool         statCardShowSpouse     = true;
+    bool         statCardShowCompanions = true;
+    // 0 = Metric (m, km), 1 = Imperial (ft, mi).
+    std::int32_t statCardDistanceUnits  = 0;
 
     std::int32_t titleColorR = 255, titleColorG = 220, titleColorB = 140; // gold
     std::int32_t bodyColorR  = 236, bodyColorG  = 210, bodyColorB  = 160; // warm off-white
@@ -468,9 +483,10 @@ public:
     float        clearedBadgeSize   = 7.0f;
     std::int32_t clearedBadgeColorR = 90, clearedBadgeColorG = 200, clearedBadgeColorB = 110, clearedBadgeColorA = 235;
 
-    bool  markerImageEnabled = true;
-    float markerImageWidth   = 1.0f;
-    float markerImageAlpha   = 1.0f;
+    // Minimum card width in px at Interface Scale 1.0; 0 = card hugs content.
+    bool  markerImageEnabled  = true;
+    int   markerImageMinWidth = 0;
+    float markerImageAlpha    = 1.0f;
 
     ImU32 FavBadgeCol()  const { return IM_COL32(favBadgeColorR, favBadgeColorG, favBadgeColorB, favBadgeColorA); }
     ImU32 NoteBadgeCol() const { return IM_COL32(noteBadgeColorR, noteBadgeColorG, noteBadgeColorB, noteBadgeColorA); }

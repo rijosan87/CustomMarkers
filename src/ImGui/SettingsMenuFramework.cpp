@@ -464,6 +464,28 @@ namespace SettingsMenuFramework {
 
     static void PanelStatCard(Settings* settings) {
         ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.ShowMeta").c_str(), &settings->statCardShowDetails);
+        ImGuiMCP::Indent();
+        ImGuiMCP::BeginDisabled(!settings->statCardShowDetails);
+        const FlowItem rowItems[] = {
+            { LocalizationManager::Get("Settings.StatCardRowType"),       &settings->statCardShowType },
+            { LocalizationManager::Get("Settings.StatCardRowHold"),       &settings->statCardShowHold },
+            { LocalizationManager::Get("Settings.StatCardRowDistance"),   &settings->statCardShowDistance },
+            { LocalizationManager::Get("Settings.StatCardRowBounty"),     &settings->statCardShowBounty },
+            { LocalizationManager::Get("Settings.StatCardRowCleared"),    &settings->statCardShowCleared },
+            { LocalizationManager::Get("Settings.StatCardRowBoss"),       &settings->statCardShowBoss },
+            { LocalizationManager::Get("Settings.StatCardRowQuests"),     &settings->statCardShowQuests },
+            { LocalizationManager::Get("Settings.StatCardRowServices"),   &settings->statCardShowServices },
+            { LocalizationManager::Get("Settings.StatCardRowPlayerHome"), &settings->statCardShowPlayerHome },
+            { LocalizationManager::Get("Settings.StatCardRowSpouse"),     &settings->statCardShowSpouse },
+            { LocalizationManager::Get("Settings.StatCardRowCompanions"), &settings->statCardShowCompanions },
+        };
+        CheckboxFlow(rowItems, 11);
+        const std::string unitMetric   = LocalizationManager::Get("Settings.DistanceUnitsMetric");
+        const std::string unitImperial = LocalizationManager::Get("Settings.DistanceUnitsImperial");
+        const char* distanceUnits[] = { unitMetric.c_str(), unitImperial.c_str() };
+        ImGuiMCP::Combo(LocalizationManager::Get("Settings.DistanceUnits").c_str(), &settings->statCardDistanceUnits, distanceUnits, 2);
+        ImGuiMCP::EndDisabled();
+        ImGuiMCP::Unindent();
         ImGuiMCP::Spacing();
         SectionLabel(LocalizationManager::Get("Settings.SectionVanillaCardPlacement").c_str());
         const std::string anchorTop    = LocalizationManager::Get("Settings.AnchorTop");
@@ -504,8 +526,7 @@ namespace SettingsMenuFramework {
     }
 
     static void PanelMarkerImages(Settings* settings) {
-        ImGuiMCP::SliderFloat((LocalizationManager::Get("Settings.Width") + "##markerimg").c_str(), &settings->markerImageWidth,
-                              0.25f, 1.0f, "%.2f");
+        ImGuiMCP::SliderInt((LocalizationManager::Get("Settings.ImageMinWidth") + "##markerimg").c_str(), &settings->markerImageMinWidth, 0, 800, "%d px");
         ImGuiMCP::SliderFloat((LocalizationManager::Get("Settings.Opacity") + "##markerimg").c_str(), &settings->markerImageAlpha,
                               0.0f, 1.0f, "%.2f");
     }
@@ -517,7 +538,10 @@ namespace SettingsMenuFramework {
             ImGuiMCP::SliderInt(LocalizationManager::Get("Settings.MinHeightPct").c_str(), &settings->listPanelMinHeightPct, 0, 95, "%d%%");
             ImGuiMCP::SliderInt(LocalizationManager::Get("Settings.MaxHeightPct").c_str(), &settings->listPanelMaxHeightPct, 30, 95, "%d%%");
             ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.ShowOverview").c_str(), &settings->listShowOverview);
-            ImGuiMCP::SameLine();
+            if (settings->listShowOverview) {
+                ImGuiMCP::SameLine();
+                ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.ShowCompanions").c_str(), &settings->listShowCompanions);
+            }
             ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.ShowActiveQuests").c_str(), &settings->listShowActiveQuests);
 
             ImGuiMCP::Spacing();

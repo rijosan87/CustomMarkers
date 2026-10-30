@@ -12,6 +12,8 @@
 #include "FontManager.h"
 #include "MenuUtils.h"
 #include "UIScale.h"
+#include "QuestTracker.h"
+#include "CompanionTracker.h"
 
 #include <RE/Skyrim.h>
 #include <SKSE/SKSE.h>
@@ -29,8 +31,9 @@
 
 namespace {
     constexpr std::ptrdiff_t kHoveredMarkerOffset = 0x30558;
+    // BSTArray size on all runtimes; +0x30478 is the capacity.
     inline std::ptrdiff_t MarkerArrayCountOffset() {
-        return REL::Relocate<std::ptrdiff_t>(0x30480, 0x30478);
+        return 0x30480;
     }
     // MapMenu+0x10 holds GFxMovieView*. Same pattern used by the
     // description-card suppression code.
@@ -68,6 +71,15 @@ namespace {
         std::string      holdName;          // Hold name (engine string), "" if none
         bool             isCleared    = false;
         std::uint32_t    bounty       = 0;
+        // Resolved with the identity. Empty text or bossState -1 = no row.
+        bool             posInMapFrame = false;
+        std::string      distanceText;
+        std::string      servicesText;
+        std::string      homesText;
+        std::string      questsText;
+        std::string      companionsText;
+        std::string      spouseText;
+        std::int8_t      bossState    = -1;
         float            textAnchorX  = 0.0f;  // screen px, vanilla title center
         float            titleWidthPx = 0.0f;  // screen px, vanilla title width (for left/right align)
         float            textAnchorY  = 0.0f;  // screen px, vanilla title top (Y anchor, cleared-safe)
@@ -305,6 +317,101 @@ namespace {
         return loc->IsCleared();
     }
 
+    // BGSLocation has no child list; built once, location records are static.
+    const std::unordered_map<RE::FormID, std::vector<RE::BGSLocation*>>& LocationChildren() {
+        static std::unordered_map<RE::FormID, std::vector<RE::BGSLocation*>> map;
+        static bool built = false;
+        if (!built) {
+            if (auto* dh = RE::TESDataHandler::GetSingleton()) {
+                for (auto* loc : dh->GetFormArray<RE::BGSLocation>()) {
+                    if (loc && loc->parentLoc) {
+                        map[loc->parentLoc->GetFormID()].push_back(loc);
+                    }
+                }
+                built = true;
+            }
+        }
+        return map;
+    }
+
+    // Service keywords sit on child locations, so the walk is recursive.
+    void CollectChildren(RE::BGSLocation* a_loc, std::vector<RE::BGSLocation*>& a_out, int a_depth = 0) {
+        if (!a_loc || a_depth >= 8) return;
+        const auto& map = LocationChildren();
+        auto it = map.find(a_loc->GetFormID());
+        if (it == map.end()) return;
+        for (auto* c : it->second) {
+            a_out.push_back(c);
+            CollectChildren(c, a_out, a_depth + 1);
+        }
+    }
+
+    struct ServiceDef {
+        RE::FormID  kw;
+        const char* key;
+    };
+    // LocTypeStables is KeywordsFixed.esp, not vanilla: left out.
+    constexpr RE::FormID kLocTypeStore = 0x0001CB86;
+    constexpr ServiceDef kServices[] = {
+        { 0x0001CB87,    "StatCard.Service.Inn" },
+        { kLocTypeStore, "StatCard.Service.Store" },
+        { 0x0001CD56,    "StatCard.Service.Temple" },
+        { 0x0001CD5A,    "StatCard.Service.Guild" },
+        { 0x0001CD55,    "StatCard.Service.Barracks" },
+        { 0x0001CD59,    "StatCard.Service.Jail" },
+        { 0x0001CD57,    "StatCard.Service.Castle" },
+    };
+    constexpr RE::FormID kLocTypePlayerHouse = 0x000FC1A3;
+    // LocTypeCity, LocTypeTown, LocTypeSettlement.
+    constexpr RE::FormID kLocTypeSettlementKeywords[] = { 0x00013168, 0x00013166, 0x00013167 };
+    constexpr RE::FormID kLocTypeClearableID = 0x000F5E80;
+    constexpr RE::FormID kLocRefTypeBoss     = 0x000130F7;   // "Boss" LCRT; DLC2 boss types not covered
+
+    // -1 = no boss ref in memory, 0 = alive, 1 = every boss dead.
+    std::int8_t ResolveBoss(RE::BGSLocation* a_loc) {
+        if (!a_loc) return -1;
+        int bosses = 0, dead = 0;
+        for (const auto& sr : a_loc->specialRefs) {
+            if (!sr.type || sr.type->GetFormID() != kLocRefTypeBoss) continue;
+            auto* ref   = RE::TESForm::LookupByID<RE::TESObjectREFR>(sr.refData.refID);
+            auto* actor = ref ? ref->As<RE::Actor>() : nullptr;
+            if (!actor) continue;
+            ++bosses;
+            if (actor->IsDead()) ++dead;
+        }
+        if (bosses == 0) return -1;
+        return dead == bosses ? 1 : 0;
+    }
+
+    // Parent-chain walk, bounded so bad mod data cannot loop.
+    bool LocationWithin(RE::BGSLocation* a_loc, RE::BGSLocation* a_target) {
+        int guard = 0;
+        for (auto* cur = a_loc; cur && guard < 16; cur = cur->parentLoc, ++guard) {
+            if (cur == a_target) return true;
+        }
+        return false;
+    }
+
+    // 1 game unit = 0.01428 m. Unit words are appended, never used as a format pattern.
+    std::string FormatDistance(float a_units) {
+        const float m = a_units * 0.01428f;
+        const auto* set = Settings::GetSingleton();
+        if (set && set->statCardDistanceUnits == 1) {
+            const float ft = m * 3.28084f;
+            const float mi = m / 1609.344f;
+            if (mi < 0.1f) {
+                return std::format("{} {}", static_cast<int>(std::round(ft / 10.0f) * 10.0f),
+                                   LocalizationManager::Get("StatCard.UnitFeet"));
+            }
+            return std::format("{:.1f} {}", mi, LocalizationManager::Get("StatCard.UnitMiles"));
+        }
+        if (m < 1000.0f) {
+            return std::format("{} {}", static_cast<int>(std::round(m / 10.0f) * 10.0f),
+                               LocalizationManager::Get("StatCard.UnitMeters"));
+        }
+        return std::format("{:.1f} {}", m / 1000.0f, LocalizationManager::Get("StatCard.UnitKilometers"));
+    }
+
     bool ConvertToMapWorldspace(RE::TESWorldSpace* a_from, RE::NiPoint3& a_pos) {
         auto* ui = RE::UI::GetSingleton();
         auto  menu = ui ? ui->GetMenu<RE::MapMenu>() : nullptr;
@@ -348,6 +455,14 @@ namespace {
         a_out.holdName.clear();
         a_out.isCleared = false;
         a_out.bounty = 0;
+        a_out.posInMapFrame = false;
+        a_out.distanceText.clear();
+        a_out.servicesText.clear();
+        a_out.homesText.clear();
+        a_out.questsText.clear();
+        a_out.companionsText.clear();
+        a_out.spouseText.clear();
+        a_out.bossState = -1;
         if (!a_menu || a_idx < 0) return;
 
         auto base   = reinterpret_cast<std::uintptr_t>(a_menu);
@@ -384,6 +499,14 @@ namespace {
             a_out.holdName = g_identityCache.identity.holdName;
             a_out.isCleared = g_identityCache.identity.isCleared;
             a_out.bounty = g_identityCache.identity.bounty;
+            a_out.posInMapFrame = g_identityCache.identity.posInMapFrame;
+            a_out.distanceText = g_identityCache.identity.distanceText;
+            a_out.servicesText = g_identityCache.identity.servicesText;
+            a_out.homesText = g_identityCache.identity.homesText;
+            a_out.questsText = g_identityCache.identity.questsText;
+            a_out.companionsText = g_identityCache.identity.companionsText;
+            a_out.spouseText = g_identityCache.identity.spouseText;
+            a_out.bossState = g_identityCache.identity.bossState;
             return;
         }
 
@@ -441,7 +564,7 @@ namespace {
                 a_out.hasPosition = true;
                 if (auto* ws = refr->GetWorldspace()) {
                     a_out.worldSpaceID = ws->GetFormID();
-                    ConvertToMapWorldspace(ws, a_out.position);
+                    a_out.posInMapFrame = ConvertToMapWorldspace(ws, a_out.position);
                 }
                 if (auto* cell = refr->GetParentCell()) {
                     a_out.cellID = cell->GetFormID();
@@ -479,6 +602,126 @@ namespace {
                 }
 #endif
                 a_out.isCleared = ResolveCleared(refr.get());
+
+                // Read from location keywords, not marker type: Atlas Map Markers retypes cities.
+                bool cityOrTown = false;
+                auto* loc = refr->GetEditorLocation();
+                const char* editorLocName = loc ? loc->GetFullName() : nullptr;
+                const bool markerIsLoc = editorLocName && a_out.name == editorLocName;
+                if (loc && markerIsLoc) {
+                    for (RE::FormID kwID : kLocTypeSettlementKeywords) {
+                        auto* kw = RE::TESForm::LookupByID<RE::BGSKeyword>(kwID);
+                        if (kw && loc->HasKeyword(kw)) { cityOrTown = true; break; }
+                    }
+                }
+
+                if (loc) {
+                    std::vector<RE::BGSLocation*> kids;
+                    CollectChildren(loc, kids);
+
+                    // Shop markers carry the city as editor location: match the child by name.
+                    std::vector<RE::BGSLocation*> serviceLocs;
+                    if (cityOrTown) {
+                        serviceLocs = kids;
+                    } else {
+                        if (markerIsLoc) {
+                            serviceLocs.push_back(loc);
+                        } else {
+                            for (auto* k : kids) {
+                                const char* nm = k->GetFullName();
+                                if (nm && a_out.name == nm) {
+                                    serviceLocs.push_back(k);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    std::string svc;
+                    for (const auto& def : kServices) {
+                        auto* kw = RE::TESForm::LookupByID<RE::BGSKeyword>(def.kw);
+                        if (!kw) continue;
+                        int n = 0;
+                        for (auto* k : serviceLocs) {
+                            if (k->HasKeyword(kw)) ++n;
+                        }
+                        if (n == 0) continue;
+                        if (!svc.empty()) svc += ", ";
+                        svc += LocalizationManager::Get(def.key);
+                        if (def.kw == kLocTypeStore && n > 1) svc += std::format(" ({})", n);
+                    }
+                    a_out.servicesText = std::move(svc);
+
+                    // Lists unbought houses too; ownership is not checked.
+                    auto* homeKw = cityOrTown
+                        ? RE::TESForm::LookupByID<RE::BGSKeyword>(kLocTypePlayerHouse) : nullptr;
+                    if (homeKw) {
+                        std::string homes;
+                        for (auto* k : kids) {
+                            if (!k->HasKeyword(homeKw)) continue;
+                            const char* nm = k->GetFullName();
+                            if (!nm || !*nm) continue;
+                            if (!homes.empty()) homes += ", ";
+                            homes += nm;
+                        }
+                        a_out.homesText = std::move(homes);
+                    }
+
+                    // Same place rule as Services. No place resolved = no companion row.
+                    RE::BGSLocation* placeLoc = (cityOrTown || markerIsLoc) ? loc
+                        : (serviceLocs.empty() ? nullptr : serviceLocs.front());
+                    if (placeLoc) {
+                        std::string comp, spouse;
+                        for (const auto& c : CompanionTracker::Get()) {
+                            if (!LocationWithin(c.loc, placeLoc)) continue;
+                            std::string& out = c.spouse ? spouse : comp;
+                            if (!out.empty()) out += ", ";
+                            out += c.name;
+                        }
+                        a_out.companionsText = std::move(comp);
+                        a_out.spouseText     = std::move(spouse);
+                    }
+
+                    // Dungeons only; undiscovered ones stay hidden so the boss is not spoiled.
+                    auto* clearKw = RE::TESForm::LookupByID<RE::BGSKeyword>(kLocTypeClearableID);
+                    if (a_out.isDiscovered && !cityOrTown && clearKw && loc->HasKeyword(clearKw)) {
+                        a_out.bossState = ResolveBoss(loc);
+                    }
+                }
+
+                // Cached with the identity: the player cannot move while the map is open.
+                if (a_out.posInMapFrame) {
+                    if (auto* pc = RE::PlayerCharacter::GetSingleton()) {
+                        if (auto* pws = pc->GetWorldspace()) {
+                            RE::NiPoint3 pp = pc->GetPosition();
+                            if (ConvertToMapWorldspace(pws, pp)) {
+                                const float dx = pp.x - a_out.position.x;
+                                const float dy = pp.y - a_out.position.y;
+                                a_out.distanceText = FormatDistance(std::sqrt(dx * dx + dy * dy));
+                            }
+                        }
+                    }
+                }
+
+                // Position match in the map frame. Radii are trial values (cities span several cells).
+                if (a_out.posInMapFrame) {
+                    const float r = cityOrTown ? 8192.0f : 2048.0f;
+                    std::string first;
+                    int         count = 0;
+                    for (const auto& q : QuestTracker::GetSingleton()->Get()) {
+                        if (!q.hasPosition) continue;
+                        auto*        qws = RE::TESForm::LookupByID<RE::TESWorldSpace>(q.worldSpaceID);
+                        RE::NiPoint3 qp  = q.position;
+                        if (!qws || !ConvertToMapWorldspace(qws, qp)) continue;
+                        const float dx = qp.x - a_out.position.x;
+                        const float dy = qp.y - a_out.position.y;
+                        if (dx * dx + dy * dy > r * r) continue;
+                        if (count++ == 0) first = q.isMiscellaneous ? q.objectiveText : q.name;
+                    }
+                    if (count > 0) {
+                        a_out.questsText = count > 1 ? std::format("{} +{}", first, count - 1) : first;
+                    }
+                }
             }
         }
 
@@ -985,26 +1228,52 @@ void HoverImageRenderer::Draw() {
     struct StatRow {
         std::string label;
         std::string value;
+        // Set by the measure pass, read back by draw, so both agree on layout.
+        float valueX = 0.0f;
+        float wrap   = 0.0f;
+        float h      = 0.0f;
     };
     std::vector<StatRow> rows;
 
-    if (set->statCardShowDetails && !s.typeLabel.empty()) {
+    if (set->statCardShowDetails && set->statCardShowType && !s.typeLabel.empty()) {
         rows.push_back({ LocalizationManager::Get("StatCard.Type"), s.typeLabel });
     }
-    if (set->statCardShowDetails && !s.holdName.empty()) {
+    if (set->statCardShowDetails && set->statCardShowHold && !s.holdName.empty()) {
         rows.push_back({ LocalizationManager::Get("StatCard.Hold"), s.holdName });
     }
+    if (set->statCardShowDetails && set->statCardShowDistance && !s.distanceText.empty()) {
+        rows.push_back({ LocalizationManager::Get("StatCard.Distance"), s.distanceText });
+    }
 
-    if (set->statCardShowDetails && s.bounty > 0) {
+    if (set->statCardShowDetails && set->statCardShowBounty && s.bounty > 0) {
         // Raw number, no translation key: a bare "{}" key carries no translatable
         // text, so it would be a key nobody can ever translate.
         rows.push_back({ LocalizationManager::Get("StatCard.Bounty"),
                          std::to_string(s.bounty) });
     }
 
-    if (set->statCardShowDetails && s.isCleared) {
+    if (set->statCardShowDetails && set->statCardShowCleared && s.isCleared) {
         rows.push_back({ LocalizationManager::Get("StatCard.Cleared"),
                          LocalizationManager::Get("StatCard.ClearedYes") });
+    }
+    if (set->statCardShowDetails && set->statCardShowBoss && s.bossState >= 0) {
+        rows.push_back({ LocalizationManager::Get("StatCard.Boss"),
+                         LocalizationManager::Get(s.bossState ? "StatCard.BossDead" : "StatCard.BossAlive") });
+    }
+    if (set->statCardShowDetails && set->statCardShowQuests && !s.questsText.empty()) {
+        rows.push_back({ LocalizationManager::Get("StatCard.Quests"), s.questsText });
+    }
+    if (set->statCardShowDetails && set->statCardShowServices && !s.servicesText.empty()) {
+        rows.push_back({ LocalizationManager::Get("StatCard.Services"), s.servicesText });
+    }
+    if (set->statCardShowDetails && set->statCardShowPlayerHome && !s.homesText.empty()) {
+        rows.push_back({ LocalizationManager::Get("StatCard.PlayerHome"), s.homesText });
+    }
+    if (set->statCardShowDetails && set->statCardShowSpouse && !s.spouseText.empty()) {
+        rows.push_back({ LocalizationManager::Get("StatCard.Spouse"), s.spouseText });
+    }
+    if (set->statCardShowDetails && set->statCardShowCompanions && !s.companionsText.empty()) {
+        rows.push_back({ LocalizationManager::Get("StatCard.Companions"), s.companionsText });
     }
 
     // Note: our own annotation, keyed by ref FormID. Runtime 0xFF... FormIDs are
@@ -1012,6 +1281,22 @@ void HoverImageRenderer::Draw() {
     std::string note;
     if (s.formID != 0 && (s.formID & 0xFF000000u) != 0xFF000000u) {
         note = MarkerManager::GetSingleton()->GetVanillaNote(s.formID);
+    }
+
+    // Resolved before measuring: the image minimum width feeds the layout.
+    ID3D11ShaderResourceView* imgSrv = nullptr;
+    float imgAspect = 1.0f;
+    if (set->markerImageEnabled && s.formID != 0 && (s.formID & 0xFF000000u) != 0xFF000000u) {
+        if (auto mapIt = g_formIDToImage.find(s.formID); mapIt != g_formIDToImage.end()) {
+            const std::string path = "Data\\Interface\\CustomMarkers\\Images\\" + mapIt->second + ".png";
+            if (auto* srv = TextureManager::GetTexture(path)) {
+                const auto size = TextureManager::GetTextureSize(srv);
+                if (size.width != 0 && size.height != 0) {
+                    imgSrv    = srv;
+                    imgAspect = static_cast<float>(size.width) / static_cast<float>(size.height);
+                }
+            }
+        }
     }
 
     // ---- Measure -----------------------------------------------------------
@@ -1024,6 +1309,12 @@ void HoverImageRenderer::Draw() {
     const float kNoteWrapW = 260.0f * geometryScale;   // hardcoded for now; was [NoteText] Width
     const float kPinGap    = 14.0f * geometryScale;    // gap between pin and panel bottom
     const float kLabelGap  = 8.0f * geometryScale;     // min gap when a label overruns the column
+    // Values wrap at this width so Services and Quests cannot widen the card.
+    const float kMaxTextW  = 270.0f * geometryScale;
+    // Pixels at Interface Scale 1.0; applies only when the card draws an image.
+    const float imgMinPanelW = imgSrv
+        ? static_cast<float>(std::clamp(set->markerImageMinWidth, 0, 800)) * geometryScale
+        : 0.0f;
 
     auto* measureFont = ImGui::GetFont();
     auto measure = [measureFont](const char* txt, float fs, float wrap = 0.0f) -> ImVec2 {
@@ -1035,14 +1326,21 @@ void HoverImageRenderer::Draw() {
 
     const float valueColX = kValueColEm * rowFS;
 
+    // Wrapped lines start at valueX; the cap widens to fit the name and image minimum.
+    const float maxTextW = (std::max)({ kMaxTextW, nameSz.x, imgMinPanelW - kPadX * 2.0f });
+    const float lineH    = measure("Ag", rowFS).y;
     float rowsW = 0.0f;
-    for (const auto& r : rows) {
+    for (auto& r : rows) {
         const float labelW = measure(r.label.c_str(), rowFS).x;
-        const float valueX = (std::max)(valueColX, labelW + kLabelGap);
-        rowsW = (std::max)(rowsW, valueX + measure(r.value.c_str(), rowFS).x);
+        r.valueX = (std::max)(valueColX, labelW + kLabelGap);
+        r.wrap   = (std::max)(maxTextW - r.valueX, 4.0f * rowFS);
+        const ImVec2 vs = measure(r.value.c_str(), rowFS, r.wrap);
+        r.h = (std::max)(vs.y, lineH);
+        rowsW = (std::max)(rowsW, r.valueX + vs.x);
     }
 
-    float headerW = (std::max)(nameSz.x, rowsW);
+    // Image minimum folds in so its width is a real note column.
+    float headerW = (std::max)({ nameSz.x, rowsW, imgMinPanelW - kPadX * 2.0f });
     const float noteWrapW = (std::max)(kNoteWrapW, headerW);
 
     const ImVec2 noteSz = note.empty() ? ImVec2{0,0}
@@ -1058,9 +1356,10 @@ void HoverImageRenderer::Draw() {
     contentW = (std::max)(contentW, notesLabelSz.x);
 
     float contentH = nameSz.y;
-    // Every stat row is one line at rowFS, so height is uniform per row.
-    const float statRowH = rows.empty() ? 0.0f : measure("Ag", rowFS).y;
-    contentH += static_cast<float>(rows.size()) * (kRowGap + statRowH);
+    // Per-row heights: a wrapped value makes its row taller.
+    for (const auto& r : rows) {
+        contentH += kRowGap + r.h;
+    }
     if (!note.empty())     contentH += kSepGap + 1.0f * geometryScale + kSepGap +
                                        notesLabelSz.y + kRowGap + noteSz.y;
 
@@ -1138,13 +1437,11 @@ void HoverImageRenderer::Draw() {
         cy += kRowGap;
         dl->AddText(font, rowFS, { tx, cy }, colLabel, r.label.c_str());
 
-        // Same clamp the measure pass used; the two must agree or a long label
-        // draws over its value on one runtime and not the other.
-        const float labelW = measure(r.label.c_str(), rowFS).x;
-        const float vx     = tx + (std::max)(valueColX, labelW + kLabelGap);
-        dl->AddText(font, rowFS, { vx, cy }, colBody, r.value.c_str());
+        // valueX and wrap come from the measure pass so draw cannot drift from it.
+        dl->AddText(font, rowFS, { tx + r.valueX, cy }, colBody,
+                    r.value.c_str(), nullptr, r.wrap);
 
-        cy += statRowH;
+        cy += r.h;
     }
 
     if (!note.empty()) {
@@ -1161,42 +1458,20 @@ void HoverImageRenderer::Draw() {
                     note.c_str(), nullptr, noteWrapW);
     }
 
-    if (!set->markerImageEnabled) {
-        return;
-    }
-    if (s.formID == 0 || (s.formID & 0xFF000000u) == 0xFF000000u) {
+    if (!imgSrv) {
         return;
     }
 
-    auto mapIt = g_formIDToImage.find(s.formID);
-    if (mapIt == g_formIDToImage.end()) {
-        return;
-    }
-
-    const std::string& stem = mapIt->second;
-    const std::string  path = "Data\\Interface\\CustomMarkers\\Images\\" + stem + ".png";
-    auto* srv = TextureManager::GetTexture(path);
-    if (!srv) {
-        return;
-    }
-
-    const auto size = TextureManager::GetTextureSize(srv);
-    if (size.width == 0 || size.height == 0) {
-        return;
-    }
-
-    const float aspect = static_cast<float>(size.width) / static_cast<float>(size.height);
-    // Fraction of the panel width: 1.0 sits flush with the card edges, lower
-    // insets it. Centred on the panel so it stays aligned at any width.
-    const float imgW   = panelW * std::clamp(set->markerImageWidth, 0.25f, 1.0f);
-    const float imgH   = imgW / aspect;
-    const float imgX   = px + (panelW - imgW) * 0.5f;
+    // The minimum width already widened the card, so the image fills it.
+    const float imgW = panelW;
+    const float imgH = imgW / imgAspect;
+    const float imgX = px;
 
     // Multiplied into the card's own fade alpha, never replacing it, so the
     // image still fades in/out with the panel instead of popping.
     const float imgA = a * std::clamp(set->markerImageAlpha, 0.0f, 1.0f);
     const ImU32 tint = IM_COL32(255, 255, 255, static_cast<int>(255 * imgA));
-    dl->AddImage(reinterpret_cast<ImTextureID>(srv),
+    dl->AddImage(reinterpret_cast<ImTextureID>(imgSrv),
                  { imgX, py - imgH }, { imgX + imgW, py },
                  { 0.0f, 0.0f }, { 1.0f, 1.0f }, tint);
 }

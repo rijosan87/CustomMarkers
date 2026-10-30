@@ -4,7 +4,7 @@ Custom Markers is an SKSE plugin for Skyrim Special Edition and Anniversary Edit
 
 ## Features
 
-- **World Map**: Custom marker placement via right-click, marker notes, context menus, custom hover stat cards, legend filtering, and middle-mouse camera rotation.
+- **World Map**: Custom marker placement via right-click, marker notes, context menus, custom hover stat cards (distance, boss, quests, services, spouse and companions), legend filtering, and middle-mouse camera rotation.
 - **Local & Interior Maps**: Interior marker support, direct door navigation, and dungeon path breadcrumb tracking.
 - **World Beacons & Loot Beams**: In-world 3D destination beacons, rarity-colored loot pillars for containers/items, and Look-and-Pin world placement.
 - **Navigation Overlay**: HUD glance mini-radar and full-screen dungeon inspect mode with actor and interactive entity tracking.

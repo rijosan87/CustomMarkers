@@ -12,6 +12,7 @@
 #include "LocalizationManager.h"
 #include "MapStats.h"
 #include "QuestTracker.h"
+#include "CompanionTracker.h"
 #include "SettingsMenu.h"
 #include "InputHandler.h"
 #include "MenuUtils.h"
@@ -227,7 +228,8 @@ namespace {
 
     constexpr std::uintptr_t kMarkerArrayOffset = 0x30470;
     constexpr std::size_t    kMarkerStride      = 0x38;
-    inline std::ptrdiff_t MarkerCountOffset() { return REL::Relocate<std::ptrdiff_t>(0x30480, 0x30478); }
+    // +0x30478 is the BSTArray capacity, not the count.
+    inline std::ptrdiff_t MarkerCountOffset() { return 0x30480; }
 
     struct MarkerEntry {
         void*         namePtr;  // +0x00  unused here
@@ -1391,6 +1393,12 @@ void MapMarkerRenderer::DrawListPanel() {
                              std::to_string(mapStats.totalBounty) });
     }
 
+    // Spouse first; gated with the Overview block.
+    std::vector<CompanionTracker::Entry> companions;
+    if (settings->listShowOverview && settings->listShowCompanions) {
+        companions = CompanionTracker::Get();
+        std::ranges::stable_sort(companions, [](const auto& a, const auto& b) { return a.spouse > b.spouse; });
+    }
     const std::size_t miscQuestCount = static_cast<std::size_t>(std::ranges::count_if(activeQuests,
         [](const ActiveQuestRow& q) { return q.isMiscellaneous; }));
     const std::size_t regularQuestCount = activeQuests.size() - miscQuestCount;
@@ -1433,6 +1441,10 @@ void MapMarkerRenderer::DrawListPanel() {
     case ListTab::Overview:
         if (settings->listShowOverview) {
             contentH += rowHeight * static_cast<float>(statRows.size());
+            if (settings->listShowCompanions) {
+                contentH += pad + headerH + pad +
+                            rowHeight * static_cast<float>((std::max)(companions.size(), std::size_t{ 1 }));
+            }
             contentH += pad + headerH + pad + rowHeight;
         }
         if (settings->listShowActiveQuests) {
@@ -1825,6 +1837,75 @@ void MapMarkerRenderer::DrawListPanel() {
                                     kStatUnderlineAlpha);
             }
             y += rowHeight;
+        }
+
+        // Click pans through the quest-row arrays, same three-array rule as below.
+        if (settings->listShowCompanions) {
+            y += pad;
+            if ((y + headerH > rowsTop) && (y < mx.y)) {
+                MapDraw::DrawTextShadowed(dl, titleFont, titleFS,
+                            ImVec2(rowContentX, y), settings->TitleCol(), LocalizationManager::Get("Overview.Companions").c_str());
+                DrawFadingUnderline(rowContentX, rowContentRight, y + headerH,
+                                    kHeadingUnderlineAlpha);
+            }
+            y += headerH + pad;
+
+            if (companions.empty()) {
+                if ((y + rowHeight > rowsTop) && (y < mx.y)) {
+                    MapDraw::DrawTextShadowed(dl, ImGui::GetFont(), bodyFS,
+                                ImVec2(rowContentX, RowTextY(y, bodyFS)),
+                                MapTheme::kMutedText, LocalizationManager::Get("Overview.NoCompanionsAway").c_str());
+                }
+                y += rowHeight;
+            }
+            for (const auto& c : companions) {
+                const float bandTop    = y - bandLift;
+                const float bandBottom = y + rowHeight - bandLift;
+                const bool  rowVisible = (bandBottom > rowsTop) && (bandTop < mx.y);
+                // Pannable only on the map showing their worldspace.
+                const bool  canPan = c.hasMapPos && currentMapWorld &&
+                                     c.rootWorldID == currentMapWorld->GetFormID();
+                if (rowVisible) {
+                    const bool rowHovered = canPan && cursorInRowsX &&
+                                            mouse.y >= bandTop && mouse.y <= bandBottom;
+                    if (rowHovered) {
+                        dl->AddRectFilled(ImVec2(rowsLeft, bandTop), ImVec2(rowsRight, bandBottom),
+                                          MapTheme::kRowHoverBg, UIScale::Px(2.0f));
+                    }
+
+                    float textX = rowContentX;
+                    if (auto* icon = TextureManager::GetIconByName(c.spouse ? "spouse" : "follower")) {
+                        const float iconX = std::floor(rowContentX - (listPngIconSz - listIconSlot) * 0.5f);
+                        const float iconY = RowTextY(y, listPngIconSz);
+                        MapDraw::DrawIconFx(dl, icon, ImVec2(iconX, iconY),
+                                            ImVec2(iconX + listPngIconSz, iconY + listPngIconSz),
+                                            IM_COL32(210, 210, 210, 255));
+                    }
+                    textX += listIconSlot + listIconGap;
+
+                    const std::string& place = c.place.empty() ? LocalizationManager::Get("Overview.Travelling") : c.place;
+                    const float placeW = ImGui::CalcTextSize(place.c_str()).x * (bodyFS / baseFS);
+                    const float placeX = (std::max)(textX, rowContentRight - placeW);
+                    const float nameRight = placeX - UIScale::Px(12.0f);
+                    const ImU32 textCol = rowHovered ? settings->BodyColHover() : settings->BodyCol();
+                    if (nameRight > textX) {
+                        const std::string nm = TruncateRowTextToWidth(c.name, nameRight - textX, bodyFS);
+                        MapDraw::DrawTextShadowed(dl, ImGui::GetFont(), bodyFS,
+                                    ImVec2(textX, RowTextY(y, bodyFS)), textCol, nm.c_str());
+                    }
+                    MapDraw::DrawTextShadowed(dl, ImGui::GetFont(), bodyFS,
+                                ImVec2(placeX, RowTextY(y, bodyFS)),
+                                MapDraw::WithAlpha(settings->BodyCol(), 0.60f), place.c_str());
+                    DrawFadingUnderline(textX, rowContentRight, bandBottom, kStatUnderlineAlpha);
+
+                    if (canPan) {
+                        questIds.push_back(c.actorID);
+                        questRects.push_back({ rowsLeft, bandTop, rowsRight, bandBottom });
+                        questPositions.push_back(c.mapPos);
+                    }
+                }
+                y += rowHeight;
+            }
         }
     }
 
