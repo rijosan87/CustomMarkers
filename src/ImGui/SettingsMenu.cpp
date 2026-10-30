@@ -726,7 +726,7 @@ namespace SettingsMenu {
             ImGui::Checkbox(LocalizationManager::Get("Settings.GlanceShowLocation").c_str(), &settings->navGlanceShowLocation);
             ImGui::SliderInt((LocalizationManager::Get("Settings.PinSize") + "##glance").c_str(), &settings->navGlancePinSize, 6, 24);
             ImGui::SliderInt((LocalizationManager::Get("Settings.ActorDotSize") + "##glance").c_str(), &settings->navGlanceActorDotSize, 2, 16);
-            ImGui::SliderInt((LocalizationManager::Get("Settings.EntityIconSize") + "##glance").c_str(), &settings->navGlanceEntityIconSize, 12, 24);
+            ImGui::SliderInt((LocalizationManager::Get("Settings.EntityIconSize") + "##glance").c_str(), &settings->navGlanceEntityIconSize, 12, 48);
             // World units from disc center to rim. Smaller = zoomed in; also
             // tightens the snapshot frustum pad so the backdrop sharpens.
             ImGui::SliderFloat((LocalizationManager::Get("Settings.ZoomMap") + "##glance").c_str(), &settings->navGlanceRangeUnits, 400.0f, 3000.0f, "%.0f");
@@ -811,7 +811,7 @@ namespace SettingsMenu {
             ImGui::SliderInt((LocalizationManager::Get("Settings.SizePercent") + "##inspect").c_str(), &settings->navInspectSizePct, 50, 100);
             ImGui::SliderInt((LocalizationManager::Get("Settings.PinSize") + "##inspect").c_str(), &settings->navInspectPinSize, 12, 48);
             ImGui::SliderInt((LocalizationManager::Get("Settings.ActorDotSize") + "##inspect").c_str(), &settings->navInspectActorDotSize, 3, 24);
-            ImGui::SliderInt((LocalizationManager::Get("Settings.EntityIconSize") + "##inspect").c_str(), &settings->navInspectEntityIconSize, 10, 40);
+            ImGui::SliderInt((LocalizationManager::Get("Settings.EntityIconSize") + "##inspect").c_str(), &settings->navInspectEntityIconSize, 10, 80);
             // Radar-mode frustum width, world units. Only affects Inspect's
             // player-centred Radar framing, not the full-cell Cell mode.
             ImGui::SliderFloat((LocalizationManager::Get("Settings.ZoomMapRadarMode") + "##inspect").c_str(), &settings->navInspectRadarRangeUnits, 1000.0f, 8000.0f, "%.0f");

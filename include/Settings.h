@@ -216,8 +216,8 @@ public:
     bool navInspectEntIngrLoose      = true;
     bool navInspectEntIngrPlant      = true;
 
-    std::int32_t navGlanceEntityIconSize  = 18;
-    std::int32_t navInspectEntityIconSize = 20;
+    std::int32_t navGlanceEntityIconSize  = 22;
+    std::int32_t navInspectEntityIconSize = 26;
 
     std::int32_t navEntityIconBgR = 0, navEntityIconBgG = 0;
     std::int32_t navEntityIconBgB = 0, navEntityIconBgA = 225;

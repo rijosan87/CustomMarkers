@@ -316,7 +316,8 @@ namespace ImGuiRenderer {
         sd.AddressU       = D3D11_TEXTURE_ADDRESS_WRAP;
         sd.AddressV       = D3D11_TEXTURE_ADDRESS_WRAP;
         sd.AddressW       = D3D11_TEXTURE_ADDRESS_WRAP;
-        sd.MipLODBias     = 0.0f;
+        // One mip finer keeps the sampled level between 1x and 2x the draw size, so icons only minify.
+        sd.MipLODBias     = -1.0f;
         sd.ComparisonFunc = D3D11_COMPARISON_ALWAYS;
         sd.MinLOD         = 0.0f;
         sd.MaxLOD         = D3D11_FLOAT32_MAX;
@@ -324,7 +325,8 @@ namespace ImGuiRenderer {
         if (SUCCEEDED(bd->pd3dDevice->CreateSamplerState(&sd, &trilinearSampler))) {
             bd->pFontSampler->Release();
             bd->pFontSampler = trilinearSampler;
-            SKSE::log::info("ImGui sampler patched: MaxLOD raised to FLT_MAX (trilinear mip sampling enabled)");
+            SKSE::log::info("ImGui sampler patched: MaxLOD raised to FLT_MAX, MipLODBias={:.1f} (trilinear mip sampling enabled)",
+                sd.MipLODBias);
         } else {
             SKSE::log::warn("Sampler patch failed: CreateSamplerState returned an error");
         }

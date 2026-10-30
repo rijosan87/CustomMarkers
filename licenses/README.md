@@ -23,3 +23,5 @@ corresponding source must be made available.
 | PolyHook 2 | MIT |
 | DirectXTex | MIT |
 | nlohmann/json | MIT |
+| lunasvg 3.5.0 | MIT |
+| plutovg (lunasvg dependency) | MIT |

@@ -1,20 +1,27 @@
+# Unreleased
+
+## Features
+
+- **SVG icons:** A `.svg` is used when the `.png` of the same name is missing.
+- **Icons:** Cleaner edges at small sizes. Entity Icon Size goes up to 48 (radar) and 80 (Inspect); defaults 22 and 26.
+
 # Version 1.3.2
 
 ## Features
 
-- **Stat card rows:** Hovering a vanilla marker now also shows Distance (metric or imperial), Boss (Dead/Alive, discovered dungeons), Quests at that location, Services (cities and towns list all; a shop or inn shows its own), and Player Home (cities and towns). Every row has its own toggle under Show Meta, in both settings menus. Confirmed in-game.
-- **Stat card wrapping and image width:** Long values such as Services and Quests wrap inside the value column instead of widening the card. Marker Images > Width is now Minimum Width in pixels: cards with an image are at least that wide, and the image always fills the card. The old fraction setting is reset. Confirmed in-game.
-- **Spouse and companions:** The stat card lists your spouse and any waiting or dismissed followers at that marker. The List panel Overview tab lists everyone away from you; click a name to pan to them, or to the door of the building they are in. Active followers are not listed. Works with vanilla, SFF, AFT, and NFF. Each part has its own toggle in both settings menus. Confirmed in-game.
+- **Stat card rows:** Distance, Boss, Quests, Services and Player Home, each with its own toggle.
+- **Stat card layout:** Long values wrap. Marker image width is now a minimum width in pixels.
+- **Spouse and companions:** Shown on the stat card and in the List panel Overview; click to pan. Supports SFF, AFT and NFF.
 
 ## Fixes
 
-- **AE world map marker count:** On AE, the world map read the marker list's reserved size instead of its real count, so the Overview stats and Cleared badges also walked leftover entries past the end. They now use the real count. Confirmed in-game on AE 1.6.1170: 394 markers read instead of 512.
+- **AE marker count:** Overview stats and Cleared badges no longer read past the end of the marker list.
 
 # Version 1.3.1
 
 ## Fixes
 
-- **SmoothCam compatibility:** Custom Markers no longer hooks the engine-wide Scaleform invoke that SmoothCam also hooks. The Ctrl hover-zoom suppression on the local map now hooks only the local map's own `SetSelectedMarker` call. Fixes a hook conflict reported with both mods installed, where new games and save loads took very long and the character occasionally locked up in combat. Hook Map no longer reports the conflict, and Ctrl suppression on the local map still works in-game.
+- **SmoothCam:** Fixed a hook conflict causing slow loads and occasional combat lockups.
 
 # Version 1.3.0
 

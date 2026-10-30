@@ -1679,7 +1679,7 @@ void MinimapRenderer::DrawInspect(const NavigationFrame& f, float a_alpha) {
             auto* s = Settings::GetSingleton();
             if (s->InspectAnyEntity()) {
                 // Icon box side length in screen px, user-configurable
-                // (Settings::navInspectEntityIconSize, 10-40 in SettingsMenu).
+                // (Settings::navInspectEntityIconSize, 10-80 in SettingsMenu).
                 const float half = UIScale::Px(static_cast<float>(s->navInspectEntityIconSize) * 0.5f);
 
                 dl->PushClipRect(min, max, true);

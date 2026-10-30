@@ -12,6 +12,12 @@ Custom Markers is an SKSE plugin for Skyrim Special Edition and Anniversary Edit
 
 ---
 
+## Icons
+
+Icons live in `Data/Interface/CustomMarkers/Icons/` and marker images in `Images/`. A `.svg` is used when the `.png` with the same name is missing.
+
+---
+
 ## Loot Beam Blacklist
 
 Loot beams can be suppressed for containers, exact references, cells, and locations through plain-text lists in `Data/SKSE/Plugins/CMMBlacklist/`:
@@ -63,7 +69,7 @@ git clone https://github.com/alandtse/CommonLibSSE-NG
 ### Step 3: Configure and Build
 
 1. Open the project root folder in **Visual Studio 2022** (`File -> Open -> Folder...`).
-2. Visual Studio will read `CMakePresets.json` and `vcpkg.json`, automatically restoring package dependencies (polyhook2, imgui, directxtex, nlohmann-json, spdlog, etc.).
+2. Visual Studio will read `CMakePresets.json` and `vcpkg.json`, automatically restoring package dependencies (polyhook2, imgui, directxtex, lunasvg, nlohmann-json, spdlog, etc.).
 3. Choose a build preset:
    - `Release`: SE + AE runtime dispatch binary.
    - `Release SE (1.5.97)`: Dedicated SE build.

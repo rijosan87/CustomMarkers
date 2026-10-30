@@ -70,6 +70,7 @@ find_package(PolyHook_2 CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
 find_package(directxtex CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(lunasvg CONFIG REQUIRED)
 # MINIMUM_SKSE_VERSION must be a full x.y.z triplet: the generator splits on "."
 # and a bare "0" (the default) emits REL::Version{ 0, , , 0 } - a syntax error.
 add_commonlibsse_plugin(${PROJECT_NAME} MINIMUM_SKSE_VERSION 0.0.0 SOURCES src/AutomationTelemetry.cpp src/plugin.cpp src/MarkerManager.cpp src/MapMarkerRenderer.cpp src/LocalMapRenderer.cpp src/LocalMapClickHook.cpp src/MapHoverHook.cpp src/Settings.cpp src/LocalizationManager.cpp src/PlaceMarkerHook.cpp src/MarkerClickHook.cpp src/MarkerHoverHook.cpp src/MarkerFilterHook.cpp src/MapLookRemapHook.cpp src/CompassHook.cpp src/HUDMarkerHook.cpp src/ImGui/Renderer.cpp src/InputHook.cpp src/TextureManager.cpp src/BackgroundManager.cpp src/HoverImageRenderer.cpp src/PathTracker.cpp src/MinimapRenderer.cpp src/MinimapSnapshotTransition.cpp src/MinimapEntityTransition.cpp src/WorldBeaconRenderer.cpp src/LootBeamRenderer.cpp src/LootBeamDesignModern.cpp src/LootBeamDesignWisp.cpp src/LootBeamBlacklist.cpp src/TCCItemStatus.cpp src/LookPinRenderer.cpp src/RenderTargetUpscaler.cpp src/EntityMarkerSource.cpp src/ActorMarkerSource.cpp src/ImGui/SettingsMenu.cpp src/ImGui/SettingsMenuFramework.cpp src/FontManager.cpp src/MapStats.cpp src/QuestTracker.cpp src/CompanionTracker.cpp src/InputHandler.cpp)# <--- specifies plugin.cpp
@@ -85,7 +86,7 @@ target_link_options(${PROJECT_NAME} PRIVATE /DEBUG /OPT:REF /OPT:ICF)
 # Add include directories
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # Link PolyHook2 for runtime function-entry detours and ImGui for rendering
-target_link_libraries(${PROJECT_NAME} PRIVATE PolyHook_2::PolyHook_2 imgui::imgui Microsoft::DirectXTex nlohmann_json::nlohmann_json)
+target_link_libraries(${PROJECT_NAME} PRIVATE PolyHook_2::PolyHook_2 imgui::imgui Microsoft::DirectXTex nlohmann_json::nlohmann_json lunasvg::lunasvg)
 # Silence the stdext warnings
 target_compile_definitions(${PROJECT_NAME} PRIVATE _SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING)
 # When your SKSE .dll is compiled, this will automatically copy the .dll into your mods folder.

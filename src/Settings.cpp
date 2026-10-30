@@ -300,9 +300,9 @@ void Settings::Load() {
 
     const auto glanceEntityIconSize = static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlanceEntityIconSize", navGlanceEntityIconSize));
     // Match both settings sliders so saved sizes survive a restart.
-    navGlanceEntityIconSize = std::clamp(glanceEntityIconSize, 12, 24);
+    navGlanceEntityIconSize = std::clamp(glanceEntityIconSize, 12, 48);
     logger::debug("GlanceEntityIconSize load: INI={} applied={}", glanceEntityIconSize, navGlanceEntityIconSize);
-    navInspectEntityIconSize = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "InspectEntityIconSize", navInspectEntityIconSize)), 10, 40);
+    navInspectEntityIconSize = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "InspectEntityIconSize", navInspectEntityIconSize)), 10, 80);
     ReadColor4Hex(ini, "NavigationOverlay", "EntityIconBackground", nullptr,
                   navEntityIconBgR, navEntityIconBgG, navEntityIconBgB, navEntityIconBgA);
     ReadColor4Hex(ini, "NavigationOverlay", "EntityIconBorder", nullptr,
