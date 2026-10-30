@@ -1,3 +1,10 @@
+/**
+ * @file Stubs.h
+ *
+ * Copyright (c) Parapets
+ * SPDX-License-Identifier: MIT
+ */
+
 #pragma once
 
 // Map Marker Framework stub definitions.
