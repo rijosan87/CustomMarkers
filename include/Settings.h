@@ -485,7 +485,7 @@ public:
 
     // Minimum card width in px at Interface Scale 1.0; 0 = card hugs content.
     bool  markerImageEnabled  = true;
-    int   markerImageMinWidth = 0;
+    int   markerImageMinWidth = 260;
     float markerImageAlpha    = 1.0f;
 
     ImU32 FavBadgeCol()  const { return IM_COL32(favBadgeColorR, favBadgeColorG, favBadgeColorB, favBadgeColorA); }
