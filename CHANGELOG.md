@@ -1,27 +1,18 @@
-# Unreleased
-
-## Features
-
-- **SVG icons:** A `.svg` is used when the `.png` of the same name is missing.
-- **Icons:** Cleaner edges at small sizes. Entity Icon Size goes up to 48 (radar) and 80 (Inspect); defaults 22 and 26.
-
-# Version 1.3.2
+# Version 1.3.1
 
 ## Features
 
 - **Stat card rows:** Distance, Boss, Quests, Services and Player Home, each with its own toggle.
 - **Stat card layout:** Long values wrap. Marker image width is now a minimum width in pixels.
 - **Spouse and companions:** Shown on the stat card and in the List panel Overview; click to pan. Supports SFF, AFT and NFF.
-
-## Fixes
-
-- **AE marker count:** Overview stats and Cleared badges no longer read past the end of the marker list.
-
-# Version 1.3.1
+- **SVG icons:** A `.svg` is used when the `.png` of the same name is missing.
+- **Icons:** Cleaner edges at small sizes. Entity Icon Size goes up to 48 (radar) and 80 (Inspect); defaults 22 and 26.
 
 ## Fixes
 
 - **SmoothCam:** Fixed a hook conflict causing slow loads and occasional combat lockups.
+- **AE marker count:** Overview stats and Cleared badges no longer read past the end of the marker list.
+- **Icon sampling:** Mip bias -1 in `Renderer.cpp`; ease to -0.5 if icons shimmer.
 
 # Version 1.3.0
 
