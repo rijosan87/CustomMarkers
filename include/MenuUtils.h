@@ -313,6 +313,11 @@ namespace MenuUtils {
             return true;
         }
 
+        // Console tm hides only Scaleform menus; follow it so ImGui overlays hide too.
+        if (!ui->IsShowingMenus()) {
+            return true;
+        }
+
         return IsBlockingMenuOpen() || IsInPhotoMode() || AreFightingControlsDisabled();
     }
 

@@ -1,3 +1,13 @@
+# Version 1.3.2
+
+## Features
+
+- **`tm` support:** Mini Radar, beacons, loot beams and Look & Pin now hide with the console `tm` command.
+
+## Fixes
+
+- **Companions crash:** Fixed a crash when opening the List panel with a broken NPC record in the load order.
+
 # Version 1.3.1
 
 ## Features

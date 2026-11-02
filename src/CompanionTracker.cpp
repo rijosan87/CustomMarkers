@@ -123,7 +123,10 @@ namespace CompanionTracker {
                     for (const auto& [id, form] : *map) {
                         if (!form || form->GetFormType() != RE::FormType::ActorCharacter) continue;
                         auto* actor = form->As<RE::Actor>();
-                        if (!actor || actor == player || actor->IsDead()) continue;
+                        if (!actor || actor == player) continue;
+                        // The all-forms walk reaches never-loaded refs; a missing base NPC crashes GetFactionRank.
+                        if (actor->IsDeleted() || !actor->GetActorBase()) continue;
+                        if (actor->IsDead()) continue;
 
                         const bool teammate  = actor->IsPlayerTeammate();
                         const bool waiting   = actor->AsActorValueOwner()->GetActorValue(
