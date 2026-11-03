@@ -632,6 +632,9 @@ namespace SettingsMenuFramework {
             ColorEdit4(LocalizationManager::Get("Settings.Border").c_str(),
                        settings->navEntityIconBorderR, settings->navEntityIconBorderG,
                        settings->navEntityIconBorderB, settings->navEntityIconBorderA);
+            ColorEdit4(LocalizationManager::Get("Settings.IconTint").c_str(),
+                       settings->navEntityIconTintR, settings->navEntityIconTintG,
+                       settings->navEntityIconTintB, settings->navEntityIconTintA);
             ImGuiMCP::SliderFloat(LocalizationManager::Get("Settings.Padding").c_str(),
                                   &settings->navEntityIconPadding, 0.0f, 8.0f, "%.1f px");
             ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.Icons3D").c_str(), &settings->navEntityIcon3D);

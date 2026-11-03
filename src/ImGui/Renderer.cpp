@@ -290,6 +290,23 @@ namespace ImGuiRenderer {
         lastVisible = visible;
     }
 
+    static ID3D11SamplerState*  s_SmallIconSampler = nullptr;
+    static ID3D11DeviceContext* s_SmallIconCtx     = nullptr;
+
+    static void BindSmallIconSamplerCb(const ImDrawList*, const ImDrawCmd*) {
+        if (s_SmallIconSampler && s_SmallIconCtx)
+            s_SmallIconCtx->PSSetSamplers(0, 1, &s_SmallIconSampler);
+    }
+
+    void BeginSmallIconSampler(ImDrawList* dl) {
+        if (s_SmallIconSampler) dl->AddCallback(BindSmallIconSamplerCb, nullptr);
+    }
+
+    // ResetRenderState rebinds the backend's global sampler.
+    void EndSmallIconSampler(ImDrawList* dl) {
+        if (s_SmallIconSampler) dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+    }
+
     static void PatchImGuiSamplerOnce() {
         static bool s_Patched = false;
         if (s_Patched) return;
@@ -321,6 +338,12 @@ namespace ImGuiRenderer {
         sd.ComparisonFunc = D3D11_COMPARISON_ALWAYS;
         sd.MinLOD         = 0.0f;
         sd.MaxLOD         = D3D11_FLOAT32_MAX;
+        {
+            D3D11_SAMPLER_DESC smallDesc = sd;
+            smallDesc.MipLODBias = 0.0f;
+            if (SUCCEEDED(bd->pd3dDevice->CreateSamplerState(&smallDesc, &s_SmallIconSampler)))
+                s_SmallIconCtx = bd->pd3dDeviceContext;
+        }
         ID3D11SamplerState* trilinearSampler = nullptr;
         if (SUCCEEDED(bd->pd3dDevice->CreateSamplerState(&sd, &trilinearSampler))) {
             bd->pFontSampler->Release();

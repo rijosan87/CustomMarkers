@@ -223,6 +223,8 @@ public:
     std::int32_t navEntityIconBgB = 0, navEntityIconBgA = 225;
     std::int32_t navEntityIconBorderR = 255, navEntityIconBorderG = 255;
     std::int32_t navEntityIconBorderB = 255, navEntityIconBorderA = 170;
+    std::int32_t navEntityIconTintR = 255, navEntityIconTintG = 255;
+    std::int32_t navEntityIconTintB = 255, navEntityIconTintA = 255;
     float navEntityIconPadding = 1.0f;
     bool navEntityIcon3D = true;
     bool navEntityIconShadow = true;

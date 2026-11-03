@@ -22,6 +22,7 @@
 #include "PartySheetState.h"
 #include "FontManager.h"
 #include "UIScale.h"
+#include "ImGui/Renderer.h"
 #include "RE/B/BSTreeManager.h"
 #include "RE/N/NiSwitchNode.h"
 
@@ -288,25 +289,34 @@ namespace {
         return (c & ~IM_COL32_A_MASK) | (ca << IM_COL32_A_SHIFT);
     }
 
+    // Whole-pixel origin and even size; fractional rects smear icon edges.
+    struct SnappedRect { ImVec2 min, max; };
+    SnappedRect SnapIconRect(float cx, float cy, float side) {
+        const float s = (std::max)(2.0f, std::round(side * 0.5f) * 2.0f);
+        const float x0 = std::round(cx - s * 0.5f);
+        const float y0 = std::round(cy - s * 0.5f);
+        return { ImVec2(x0, y0), ImVec2(x0 + s, y0 + s) };
+    }
+
     void DrawEntityIconBadge(ImDrawList* dl, ID3D11ShaderResourceView* icon,
                              const ImVec2& center, float side, float alpha, bool withBadge) {
         const auto* settings = Settings::GetSingleton();
-        const float half = side * 0.5f;
         const float padding = withBadge
             ? (std::min)(side * 0.25f, UIScale::Px(settings->navEntityIconPadding)) : 0.0f;
-        const float innerHalf = half - padding;
         const float rounding = (std::min)(UIScale::Px(4.0f), side * 0.22f);
-        const ImVec2 min(center.x - half, center.y - half);
-        const ImVec2 max(center.x + half, center.y + half);
+        const auto outer = SnapIconRect(center.x, center.y, side);
+        const ImVec2 min = outer.min;
+        const ImVec2 max = outer.max;
+        const auto inner = SnapIconRect(center.x, center.y, side - padding * 2.0f);
         if (withBadge) {
             dl->AddRectFilled(min, max, FadeCol(IM_COL32(
                 settings->navEntityIconBgR, settings->navEntityIconBgG,
                 settings->navEntityIconBgB, settings->navEntityIconBgA), alpha), rounding);
         }
-        MapDraw::DrawIconFx(dl, icon,
-                            ImVec2(center.x - innerHalf, center.y - innerHalf),
-                            ImVec2(center.x + innerHalf, center.y + innerHalf),
-                            FadeCol(IM_COL32_WHITE, alpha),
+        icon = TextureManager::GetIconAtPixelSize(icon, static_cast<int>(inner.max.x - inner.min.x));
+        MapDraw::DrawIconFx(dl, icon, inner.min, inner.max,
+                            FadeCol(IM_COL32(settings->navEntityIconTintR, settings->navEntityIconTintG,
+                                             settings->navEntityIconTintB, settings->navEntityIconTintA), alpha),
                             settings->navEntityIconShadow ? 1 : 0,
                             settings->navEntityIcon3D ? 1 : 0);
         if (withBadge) {
@@ -320,8 +330,9 @@ namespace {
     void DrawQuestTargetIcon(ImDrawList* dl, ID3D11ShaderResourceView* srv,
                              float x, float y, float halfPx, float a_alpha) {
         if (!srv) return;
-        dl->AddImage(reinterpret_cast<ImTextureID>(srv),
-                     ImVec2(x - halfPx, y - halfPx), ImVec2(x + halfPx, y + halfPx),
+        const auto r = SnapIconRect(x, y, halfPx * 2.0f);
+        srv = TextureManager::GetIconAtPixelSize(srv, static_cast<int>(r.max.x - r.min.x));
+        dl->AddImage(reinterpret_cast<ImTextureID>(srv), r.min, r.max,
                      ImVec2(0, 0), ImVec2(1, 1), FadeCol(IM_COL32_WHITE, a_alpha));
     }
 
@@ -994,7 +1005,9 @@ void MinimapRenderer::Draw() {
         MinimapSnapshotTransition::Prepare(_snapshot, frame, snapshotViews);
     }
     if (glanceVisibleHere && glanceAlpha > 0.0f) {
+        ImGuiRenderer::BeginSmallIconSampler(ImGui::GetBackgroundDrawList());
         DrawGlance(frame, glanceAlpha);
+        ImGuiRenderer::EndSmallIconSampler(ImGui::GetBackgroundDrawList());
     }
     if (inspectAlpha > 0.0f) {
         DrawInspect(frame, inspectAlpha);

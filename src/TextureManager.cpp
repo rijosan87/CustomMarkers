@@ -1,6 +1,7 @@
 // Loads, caches, and manages DirectX 11 textures and icons.
 // A missing .png under \Icons\ or \Images\ falls back to the same stem as .svg.
 
+#include <map>
 #include "TextureManager.h"
 #include "MarkerManager.h"
 
@@ -30,6 +31,9 @@ namespace TextureManager {
     static ID3D11Device* g_Device = nullptr;
     static std::unordered_map<std::string, Entry> g_TextureCache;
     static std::unordered_map<ID3D11ShaderResourceView*, Size> g_SizeBySrv;
+    static std::unordered_map<ID3D11ShaderResourceView*, std::wstring> g_SvgSourceBySrv;
+    // (base SRV, px) -> exact-size raster; nullptr = failed, use base.
+    static std::map<std::pair<ID3D11ShaderResourceView*, int>, ID3D11ShaderResourceView*> g_ExactBySize;
 
     static constexpr const char* ICONS_PATH = "Data\\Interface\\CustomMarkers\\Icons\\";
 
@@ -80,7 +84,8 @@ namespace TextureManager {
         return p.substr(0, p.size() - 4) + ext;
     }
 
-    static HRESULT RasterizeSVGFile(const std::wstring& wpath, SvgKind kind, DirectX::ScratchImage& out) {
+    static HRESULT RasterizeSVGFile(const std::wstring& wpath, SvgKind kind, DirectX::ScratchImage& out,
+                                    int iconPx = kSvgIconPx) {
         std::ifstream file(wpath, std::ios::binary);
         if (!file) return E_FAIL;
         const std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
@@ -102,8 +107,8 @@ namespace TextureManager {
             const float boxY = useArt ? bb.y : 0.0f;
             const float boxW = useArt ? bb.w : docW;
             const float boxH = useArt ? bb.h : docH;
-            w = h = kSvgIconPx;
-            scale = kSvgIconPx * kSvgIconFit / (std::max)(boxW, boxH);
+            w = h = iconPx;
+            scale = iconPx * kSvgIconFit / (std::max)(boxW, boxH);
             tx = (w - boxW * scale) / 2 - boxX * scale;
             ty = (h - boxH * scale) / 2 - boxY * scale;
             logger::debug("TextureManager: SVG fit doc={:.1f}x{:.1f} art=({:.1f},{:.1f} {:.1f}x{:.1f}){}",
@@ -140,6 +145,11 @@ namespace TextureManager {
             if (entry.srv) entry.srv->Release();
         }
         g_TextureCache.clear();
+        for (auto& [key, srv] : g_ExactBySize) {
+            if (srv) srv->Release();
+        }
+        g_ExactBySize.clear();
+        g_SvgSourceBySrv.clear();
         g_SizeBySrv.clear();
         g_Device = nullptr;
         logger::info("TextureManager shutdown");
@@ -287,6 +297,39 @@ namespace TextureManager {
         }
         g_TextureCache[path] = Entry{ srv, srcW, srcH };
         g_SizeBySrv[srv] = Size{ srcW, srcH };
+        if (isSvg && svgKind == SvgKind::kIcon) g_SvgSourceBySrv[srv] = wpath;
+        return srv;
+    }
+
+    ID3D11ShaderResourceView* GetIconAtPixelSize(ID3D11ShaderResourceView* base, int px) {
+        // Below 32 px the mip blur hides diagonal steps better than a crisp raster.
+        if (!base || !g_Device || px < 32 || px > 128) return base;
+        const auto src = g_SvgSourceBySrv.find(base);
+        if (src == g_SvgSourceBySrv.end()) return base;
+        const auto key = std::make_pair(base, px);
+        if (const auto it = g_ExactBySize.find(key); it != g_ExactBySize.end()) {
+            return it->second ? it->second : base;
+        }
+        g_ExactBySize[key] = nullptr;
+
+        DirectX::ScratchImage image;
+        if (FAILED(RasterizeSVGFile(src->second, SvgKind::kIcon, image, px))) return base;
+        ID3D11Resource* texture = nullptr;
+        if (FAILED(DirectX::CreateTexture(g_Device, image.GetImages(), image.GetImageCount(),
+                                          image.GetMetadata(), &texture))) {
+            return base;
+        }
+        ID3D11ShaderResourceView* srv = nullptr;
+        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = image.GetMetadata().format;
+        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Texture2D.MipLevels = 1;
+        const HRESULT hr = g_Device->CreateShaderResourceView(texture, &srvDesc, &srv);
+        texture->Release();
+        if (FAILED(hr)) return base;
+        g_ExactBySize[key] = srv;
+        g_SizeBySrv[srv] = Size{ static_cast<std::uint32_t>(px), static_cast<std::uint32_t>(px) };
+        logger::debug("TextureManager: exact-size SVG raster {}px (cache {})", px, g_ExactBySize.size());
         return srv;
     }
 

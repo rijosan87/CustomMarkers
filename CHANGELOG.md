@@ -1,3 +1,11 @@
+# Version 1.3.3
+
+## Features
+
+- **Icon Tint:** Colour setting for door and loot icons on the Mini Radar and Inspect.
+- **Radar icons:** Sharper SVG icons at large sizes; cleaner edges at small sizes.
+
+
 # Version 1.3.2
 
 ## Features

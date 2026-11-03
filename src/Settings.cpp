@@ -307,6 +307,8 @@ void Settings::Load() {
                   navEntityIconBgR, navEntityIconBgG, navEntityIconBgB, navEntityIconBgA);
     ReadColor4Hex(ini, "NavigationOverlay", "EntityIconBorder", nullptr,
                   navEntityIconBorderR, navEntityIconBorderG, navEntityIconBorderB, navEntityIconBorderA);
+    ReadColor4Hex(ini, "NavigationOverlay", "EntityIconTint", nullptr,
+                  navEntityIconTintR, navEntityIconTintG, navEntityIconTintB, navEntityIconTintA);
     navEntityIconPadding = std::clamp(static_cast<float>(ini.GetLongValue(
         "NavigationOverlay", "EntityIconPadding", static_cast<long>(navEntityIconPadding * 100.0f + 0.5f))) / 100.0f,
         0.0f, 8.0f);
@@ -638,6 +640,8 @@ void Settings::Save() {
                    navEntityIconBgR, navEntityIconBgG, navEntityIconBgB, navEntityIconBgA);
     WriteColor4Hex(ini, "NavigationOverlay", "EntityIconBorder",
                    navEntityIconBorderR, navEntityIconBorderG, navEntityIconBorderB, navEntityIconBorderA);
+    WriteColor4Hex(ini, "NavigationOverlay", "EntityIconTint",
+                   navEntityIconTintR, navEntityIconTintG, navEntityIconTintB, navEntityIconTintA);
     ini.SetLongValue("NavigationOverlay", "EntityIconPadding", static_cast<long>(navEntityIconPadding * 100.0f + 0.5f));
     ini.SetLongValue("NavigationOverlay", "EntityIcon3D", navEntityIcon3D ? 1L : 0L);
     ini.SetLongValue("NavigationOverlay", "EntityIconShadow", navEntityIconShadow ? 1L : 0L);

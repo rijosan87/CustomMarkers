@@ -681,6 +681,9 @@ namespace SettingsMenu {
             MapDraw::ColorEdit4Hex(LocalizationManager::Get("Settings.Border").c_str(),
                                    settings->navEntityIconBorderR, settings->navEntityIconBorderG,
                                    settings->navEntityIconBorderB, settings->navEntityIconBorderA);
+            MapDraw::ColorEdit4Hex(LocalizationManager::Get("Settings.IconTint").c_str(),
+                                   settings->navEntityIconTintR, settings->navEntityIconTintG,
+                                   settings->navEntityIconTintB, settings->navEntityIconTintA);
             ImGui::SliderFloat(LocalizationManager::Get("Settings.Padding").c_str(),
                                &settings->navEntityIconPadding, 0.0f, 8.0f, "%.1f px");
             ImGui::Checkbox(LocalizationManager::Get("Settings.Icons3D").c_str(), &settings->navEntityIcon3D);
