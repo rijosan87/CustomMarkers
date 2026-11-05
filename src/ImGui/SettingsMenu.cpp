@@ -941,6 +941,13 @@ namespace SettingsMenu {
     static void PanelBeacons(Settings* settings) {
         if (ImGui::CollapsingHeader(LocalizationManager::Get("Settings.WorldBeaconsHeader").c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Indent();
+            {
+                const FlowItem items[] = {
+                    { LocalizationManager::Get("Settings.ShowTitle") + "##beacon", &settings->navBeaconShowTitle },
+                    { LocalizationManager::Get("Settings.ShowIcon") + "##beacon", &settings->navBeaconShowIcon },
+                };
+                CheckboxFlow(items, 2);
+            }
             ImGui::SliderInt((LocalizationManager::Get("Settings.PinSize") + "##beacon").c_str(), &settings->navBeaconPinSize, 12, 48);
             // World units, not pixels: the beam is projected, so a taller pillar
             // stays visible from further away.
@@ -954,10 +961,13 @@ namespace SettingsMenu {
                     settings->navBeaconFadeNearUnits = fadeMeters * Settings::kUnitsPerMeter;
                 }
             }
-            ImGui::Checkbox((LocalizationManager::Get("Settings.ClearOnArrival") + "##beacon").c_str(), &settings->navBeaconClearOnArrival);
-            ImGui::Spacing();
-
-            ImGui::Checkbox(LocalizationManager::Get("Settings.OffScreenArrow").c_str(), &settings->navBeaconEdgeIndicator);
+            {
+                const FlowItem items[] = {
+                    { LocalizationManager::Get("Settings.ClearOnArrival") + "##beacon", &settings->navBeaconClearOnArrival },
+                    { LocalizationManager::Get("Settings.OffScreenArrow"), &settings->navBeaconEdgeIndicator },
+                };
+                CheckboxFlow(items, 2);
+            }
             ImGui::Spacing();
 
             ImGui::Unindent();

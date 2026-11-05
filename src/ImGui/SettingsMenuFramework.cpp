@@ -887,6 +887,13 @@ namespace SettingsMenuFramework {
     static void PanelBeacons(Settings* settings) {
         if (ImGuiMCP::CollapsingHeader(LocalizationManager::Get("Settings.WorldBeaconsHeader").c_str(), ImGuiMCP::ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGuiMCP::Indent();
+            {
+                const FlowItem items[] = {
+                    { LocalizationManager::Get("Settings.ShowTitle") + "##beacon", &settings->navBeaconShowTitle },
+                    { LocalizationManager::Get("Settings.ShowIcon") + "##beacon", &settings->navBeaconShowIcon },
+                };
+                CheckboxFlow(items, 2);
+            }
             ImGuiMCP::SliderInt((LocalizationManager::Get("Settings.PinSize") + "##beacon").c_str(), &settings->navBeaconPinSize, 12, 48);
             ImGuiMCP::SliderFloat((LocalizationManager::Get("Settings.PillarHeight") + "##beacon").c_str(), &settings->navBeaconPillarHeight,
                                   50.0f, 2000.0f, "%.0f");
@@ -898,10 +905,13 @@ namespace SettingsMenuFramework {
                     settings->navBeaconFadeNearUnits = fadeMeters * Settings::kUnitsPerMeter;
                 }
             }
-            ImGuiMCP::Checkbox((LocalizationManager::Get("Settings.ClearOnArrival") + "##beacon").c_str(), &settings->navBeaconClearOnArrival);
-            ImGuiMCP::Spacing();
-
-            ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.OffScreenArrow").c_str(), &settings->navBeaconEdgeIndicator);
+            {
+                const FlowItem items[] = {
+                    { LocalizationManager::Get("Settings.ClearOnArrival") + "##beacon", &settings->navBeaconClearOnArrival },
+                    { LocalizationManager::Get("Settings.OffScreenArrow"), &settings->navBeaconEdgeIndicator },
+                };
+                CheckboxFlow(items, 2);
+            }
             ImGuiMCP::Spacing();
 
             ImGuiMCP::Unindent();

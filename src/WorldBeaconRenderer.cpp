@@ -695,14 +695,17 @@ void WorldBeaconRenderer::Draw() {
             const float pinAlpha  = finalAlpha * pinMul;
             const auto  pinAlphaB = static_cast<std::uint8_t>(std::clamp(pinAlpha * 255.0f, 0.0f, 255.0f));
 
-            MapDraw::DrawDiamondBadgeFrame(
-                dl, iconAt, badgeR, coreCol, glowCol, haloCol, pinAlpha,
-                /*glowPadding=*/UIScale::Px(3.0f), /*innerAlpha=*/0.50f,
-                /*innerMinRadius=*/UIScale::Px(3.0f));
+            // Hiding the icon keeps the text anchored in place.
+            if (settings->navBeaconShowIcon) {
+                MapDraw::DrawDiamondBadgeFrame(
+                    dl, iconAt, badgeR, coreCol, glowCol, haloCol, pinAlpha,
+                    /*glowPadding=*/UIScale::Px(3.0f), /*innerAlpha=*/0.50f,
+                    /*innerMinRadius=*/UIScale::Px(3.0f));
+            }
 
             // Destination icon inside badge
             auto* pinSrv = TextureManager::GetIconByName("destination");
-            if (pinSrv) {
+            if (settings->navBeaconShowIcon && pinSrv) {
                 const float iconHalf = badgeR * 0.65f;
                 MapDraw::DrawIconFx(dl, pinSrv,
                                     ImVec2(iconAt.x - iconHalf, iconAt.y - iconHalf),
@@ -728,7 +731,7 @@ void WorldBeaconRenderer::Draw() {
             const ImVec2 distSz = distFont->CalcTextSizeA(distSize, FLT_MAX, 0.0f, distStr.c_str());
             const float textY = iconAt.y + badgeR + UIScale::Px(5.0f);
 
-            if (!label.empty()) {
+            if (settings->navBeaconShowTitle && !label.empty()) {
                 const ImVec2 labelSz = labelFont->CalcTextSizeA(labelSize, FLT_MAX, 0.0f, label.c_str());
                 const float labelX = iconAt.x - labelSz.x * 0.5f;
                 dl->AddText(labelFont, labelSize, ImVec2(labelX + shadowOffset, textY + shadowOffset), IM_COL32(0, 0, 0, pinAlphaB), label.c_str());

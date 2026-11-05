@@ -372,6 +372,8 @@ void Settings::Load() {
     navBeaconFadeNearUnits = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "BeaconFadeNearUnits", static_cast<long>(navBeaconFadeNearUnits))), 50.0f, 2000.0f);
     navBeaconClearOnArrival = (ini.GetLongValue("NavigationOverlay", "BeaconClearOnArrival", navBeaconClearOnArrival ? 1L : 0L) != 0);
     navBeaconEdgeIndicator = (ini.GetLongValue("NavigationOverlay", "BeaconEdgeIndicator", navBeaconEdgeIndicator ? 1L : 0L) != 0);
+    navBeaconShowTitle = (ini.GetLongValue("NavigationOverlay", "BeaconShowTitle", navBeaconShowTitle ? 1L : 0L) != 0);
+    navBeaconShowIcon = (ini.GetLongValue("NavigationOverlay", "BeaconShowIcon", navBeaconShowIcon ? 1L : 0L) != 0);
     lootBeamRangeUnits = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "LootBeamRangeUnits", static_cast<long>(lootBeamRangeUnits))), 200.0f, 6000.0f);
     lootBeamZBandUnits = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "LootBeamZBandUnits", static_cast<long>(lootBeamZBandUnits))), 50.0f, 2000.0f);
     lootBeamRequireLOS = (ini.GetLongValue("NavigationOverlay", "LootBeamRequireLOS", lootBeamRequireLOS ? 1L : 0L) != 0);
@@ -721,6 +723,8 @@ void Settings::Save() {
     ini.SetLongValue("NavigationOverlay", "BeaconFadeNearUnits", static_cast<long>(navBeaconFadeNearUnits));
     ini.SetLongValue("NavigationOverlay", "BeaconClearOnArrival", navBeaconClearOnArrival ? 1L : 0L);
     ini.SetLongValue("NavigationOverlay", "BeaconEdgeIndicator", navBeaconEdgeIndicator ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "BeaconShowTitle", navBeaconShowTitle ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "BeaconShowIcon", navBeaconShowIcon ? 1L : 0L);
     ini.SetLongValue("NavigationOverlay", "LootBeamRangeUnits", static_cast<long>(lootBeamRangeUnits));
     ini.SetLongValue("NavigationOverlay", "LootBeamZBandUnits", static_cast<long>(lootBeamZBandUnits));
     ini.SetLongValue("NavigationOverlay", "LootBeamRequireLOS", lootBeamRequireLOS ? 1L : 0L);

@@ -383,6 +383,8 @@ public:
     float        navBeaconFadeNearUnits = 350.0f;
     bool         navBeaconClearOnArrival = true;
     bool         navBeaconEdgeIndicator = false;
+    bool         navBeaconShowTitle = true;
+    bool         navBeaconShowIcon = true;
     bool         inputVerboseLog = false;
 
     bool         cursorVerboseLog = false;
