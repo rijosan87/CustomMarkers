@@ -1,7 +1,9 @@
 // include/QuestTracker.h
 #pragma once
 #include <RE/Skyrim.h>
+#include <chrono>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -19,6 +21,7 @@ struct ActiveQuestRow {
     RE::NiPoint3  position{};           // only meaningful when hasPosition
     RE::FormID    worldSpaceID = 0;
     std::int32_t  posSource = 0;
+    std::vector<RE::FormID> compassRefIDs;
 };
 
 class QuestTracker {
@@ -33,6 +36,9 @@ public:
 
     // Copy of the cached rows under the mutex, for the draw path.
     std::vector<ActiveQuestRow> Get();
+    void RequestRadarRefresh();
+    void ResetRadar();
+    std::shared_ptr<const std::vector<ActiveQuestRow>> GetRadarRows();
 
 private:
     QuestTracker() = default;
@@ -40,10 +46,16 @@ private:
     QuestTracker& operator=(const QuestTracker&) = delete;
 
     void RefreshOnGameThread(std::uint64_t a_generation);
+    void RefreshRadarOnGameThread(std::uint64_t a_generation);
 
     std::mutex                  _mutex;
     std::vector<ActiveQuestRow> _rows;
     bool                       _refreshPending = false;
     bool                       _sessionActive = false;
     std::uint64_t              _generation = 0;
+
+    std::shared_ptr<const std::vector<ActiveQuestRow>> _radarRows;
+    bool                                               _radarPending = false;
+    std::uint64_t                                      _radarGeneration = 0;
+    std::chrono::steady_clock::time_point              _radarLastRequest{};
 };

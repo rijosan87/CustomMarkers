@@ -13,6 +13,7 @@
 #include "LocalizationManager.h"
 #include "Settings.h"
 #include "GlanceBounds.h"
+#include "MarkerFilterHook.h"
 
 #include <algorithm>
 #include <string>
@@ -496,6 +497,7 @@ namespace SettingsMenuFramework {
         ImGuiMCP::Combo(LocalizationManager::Get("Settings.Anchor").c_str(), &settings->statCardAnchor, anchors, 4);
         ImGuiMCP::SliderInt(LocalizationManager::Get("Settings.OffsetX").c_str(), &settings->statCardOffsetX, -300, 300);
         ImGuiMCP::SliderInt(LocalizationManager::Get("Settings.OffsetY").c_str(), &settings->statCardOffsetY, -300, 300);
+        ImGuiMCP::SliderInt(LocalizationManager::Get("Settings.HoverRange").c_str(), &settings->markerHoverRange, 0, 150);
 
         ImGuiMCP::Spacing();
         ImGuiMCP::Separator();
@@ -623,6 +625,38 @@ namespace SettingsMenuFramework {
             ImGuiMCP::Unindent();
         }
         ImGuiMCP::Spacing();
+        if (ImGuiMCP::CollapsingHeader(LocalizationManager::Get("Settings.SectionRimMarkers").c_str())) {
+            ImGuiMCP::Indent();
+            ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.ShowRimMarkers").c_str(), &settings->navRimMarkersEnabled);
+            ImGuiMCP::BeginDisabled(!settings->navRimMarkersEnabled);
+            ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.HideMapMarkersInCombat").c_str(), &settings->navRimMarkersHideInCombat);
+            {
+                float rangeMeters = settings->navRimMarkerRange / Settings::kUnitsPerMeter;
+                if (ImGuiMCP::SliderFloat((LocalizationManager::Get("Settings.ShowMarkersWithin") + "##rim").c_str(), &rangeMeters, 50.0f, 2000.0f, "%.0f m")) {
+                    settings->navRimMarkerRange = rangeMeters * Settings::kUnitsPerMeter;
+                }
+            }
+            ImGuiMCP::SliderInt(LocalizationManager::Get("Settings.MaxRimMarkers").c_str(), &settings->navMaxRimMarkers, 1, 30);
+            ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.RimShowUndiscovered").c_str(), &settings->navRimShowUndiscovered);
+            ImGuiMCP::Spacing();
+            ImGuiMCP::Text("%s", LocalizationManager::Get("Settings.RimCategories").c_str());
+            for (std::size_t i = 0; i < std::size(settings->navRimMode); ++i) {
+                const auto* name = MarkerFilterHook::GetModeName(static_cast<MarkerFilterHook::FocusMode>(i));
+                const std::string label = LocalizationManager::Get(std::string("FilterMode.") + name) + "##Rim" + name;
+                ImGuiMCP::Checkbox(label.c_str(), &settings->navRimMode[i]);
+            }
+            ImGuiMCP::EndDisabled();
+            ImGuiMCP::Unindent();
+        }
+        ImGuiMCP::Spacing();
+
+        if (ImGuiMCP::CollapsingHeader(LocalizationManager::Get("Settings.SectionCompass").c_str())) {
+            ImGuiMCP::Indent();
+            ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.HideCompass").c_str(), &settings->navHideCompass);
+            ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.HideCNOQuestList").c_str(), &settings->navHideCNOQuestList);
+            ImGuiMCP::Unindent();
+        }
+        ImGuiMCP::Spacing();
 
         if (ImGuiMCP::CollapsingHeader(LocalizationManager::Get("Settings.EntityIconStyle").c_str())) {
             ImGuiMCP::Indent();
@@ -653,7 +687,13 @@ namespace SettingsMenuFramework {
                 };
                 CheckboxFlow(items, 4);
             }
+            ImGuiMCP::BeginDisabled(!settings->navActorShowHostile);
+            ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.ShowEnemiesOnRim").c_str(), &settings->navActorHostilesOnRim);
+            ImGuiMCP::EndDisabled();
             ImGuiMCP::SliderFloat(LocalizationManager::Get("Settings.DetectionRange").c_str(), &settings->navActorProximityUnits, 200.0f, 4000.0f, "%.0f");
+            ImGuiMCP::BeginDisabled(!settings->navActorShowHostile || !settings->navActorHostilesOnRim);
+            ImGuiMCP::SliderFloat(LocalizationManager::Get("Settings.EnemyRange").c_str(), &settings->navActorHostileRangeUnits, 200.0f, 8000.0f, "%.0f");
+            ImGuiMCP::EndDisabled();
             ImGuiMCP::Unindent();
         }
 
@@ -675,7 +715,25 @@ namespace SettingsMenuFramework {
                                 &settings->navGlanceOrientation, orientations, 2);
             }
             ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.GlanceShowCardinals").c_str(), &settings->navGlanceShowCardinals);
+            ImGuiMCP::BeginDisabled(!settings->navGlanceShowCardinals);
+            ImGuiMCP::SliderInt(LocalizationManager::Get("Settings.GlanceCardinalOffset").c_str(), &settings->navGlanceCardinalOffset, -20, 40);
+            ImGuiMCP::EndDisabled();
+            ImGuiMCP::SliderInt(LocalizationManager::Get("Settings.GlanceRimIconOffset").c_str(), &settings->navGlanceRimIconOffset, -20, 40);
             ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.GlanceShowLocation").c_str(), &settings->navGlanceShowLocation);
+            ImGuiMCP::BeginDisabled(!settings->navGlanceShowLocation);
+            ImGuiMCP::SliderFloat(LocalizationManager::Get("Settings.GlanceLabelScale").c_str(), &settings->navGlanceLabelScale, 0.5f, 3.0f, "%.2f");
+            ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.GlanceLabelShowDistance").c_str(), &settings->navGlanceLabelShowDistance);
+            ImGuiMCP::SameLine();
+            ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.GlanceLabelShowIcon").c_str(), &settings->navGlanceLabelShowIcon);
+            ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.ShowEnemyInCombat").c_str(), &settings->navGlanceLabelCombatEnemy);
+            {
+                const std::string unitMetric   = LocalizationManager::Get("Settings.DistanceUnitsMetric");
+                const std::string unitImperial = LocalizationManager::Get("Settings.DistanceUnitsImperial");
+                const char* labelUnits[] = { unitMetric.c_str(), unitImperial.c_str() };
+                ImGuiMCP::Combo((LocalizationManager::Get("Settings.DistanceUnits") + "##glancelabel").c_str(),
+                                &settings->navGlanceLabelDistanceUnits, labelUnits, 2);
+            }
+            ImGuiMCP::EndDisabled();
             ImGuiMCP::SliderInt((LocalizationManager::Get("Settings.PinSize") + "##glance").c_str(), &settings->navGlancePinSize, 6, 24);
             ImGuiMCP::SliderInt((LocalizationManager::Get("Settings.ActorDotSize") + "##glance").c_str(), &settings->navGlanceActorDotSize, 2, 16);
             ImGuiMCP::SliderInt((LocalizationManager::Get("Settings.EntityIconSize") + "##glance").c_str(), &settings->navGlanceEntityIconSize, 12, 48);

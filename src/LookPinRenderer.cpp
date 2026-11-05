@@ -20,7 +20,6 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <climits>
 #include <string>
 #include <string_view>
 
@@ -34,10 +33,11 @@ namespace {
 
     constexpr double kTargetHoldSec = 0.35;
 
-    constexpr float kNearHitReject = 600.0f;
 
     constexpr float kRayStartOffset = 60.0f;
     constexpr float kSelfHitReject  = 80.0f;
+    constexpr int   kMaxRayCasts    = 4;
+    constexpr float kRecastNudge    = 1.0f;
 
     // Reticle geometry, screen pixels.
     constexpr float kReticleRadius   = 14.0f;
@@ -59,9 +59,18 @@ namespace {
         return (a_col & ~IM_COL32_A_MASK) |
                (static_cast<ImU32>(std::clamp(a, 0.0f, 255.0f)) << IM_COL32_A_SHIFT);
     }
+    const RE::NiAVObject* OrbitCameraNode() {
+        const auto* pcam = RE::PlayerCamera::GetSingleton();
+        return (pcam && pcam->cameraRoot && !pcam->IsInFirstPerson()) ? pcam->cameraRoot.get() : nullptr;
+    }
 
     bool CameraForward(RE::PlayerCharacter* a_player, RE::NiPoint3& a_outFwd) {
         if (!a_player) return false;
+        if (const auto* orbit = OrbitCameraNode()) {
+            const auto& r = orbit->world.rotate;
+            a_outFwd = RE::NiPoint3{ r.entry[0][1], r.entry[1][1], r.entry[2][1] };
+            return true;
+        }
 
         const float yaw = a_player->GetAngleZ();
 
@@ -83,18 +92,42 @@ namespace {
         auto* world = a_cell->GetbhkWorld();
         if (!world) return false;
 
-        RE::bhkPickData pick;
+
+        const auto* player = RE::PlayerCharacter::GetSingleton();
         const float scale = RE::bhkWorld::GetWorldScale();
 
-        const RE::NiPoint3 to = a_from + a_fwd * kRayLength;
-        pick.rayInput.from = a_from * scale;
+        float travelled = 0.0f;
+
+        for (int cast = 0; cast < kMaxRayCasts && travelled < kRayLength; ++cast) {
+            const RE::NiPoint3 from = a_from + a_fwd * travelled;
+            const float length = kRayLength - travelled;
+            const RE::NiPoint3 to = from + a_fwd * length;
+
+            RE::bhkPickData pick;
+            pick.rayInput.from = from * scale;
         pick.rayInput.to   = to * scale;
         pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kLOS);
 
         if (!world->PickObject(pick) || !pick.rayOutput.HasHit()) return false;
 
-        a_outHit = a_from + a_fwd * (kRayLength * pick.rayOutput.hitFraction);
+
+            const float hitDist = travelled + length * pick.rayOutput.hitFraction;
+            const auto layer = pick.rayOutput.rootCollidable->GetCollisionLayer();
+            const auto* hitRef = RE::TESHavokUtilities::FindCollidableRef(*pick.rayOutput.rootCollidable);
+
+            const bool nonTarget =
+                layer == RE::COL_LAYER::kTrigger || layer == RE::COL_LAYER::kActorZone ||
+                (hitRef && hitRef == player) ||
+                (!hitRef && hitDist < kSelfHitReject);
+            if (nonTarget) {
+                travelled = hitDist + kRecastNudge;
+                continue;
+            }
+
+            a_outHit = a_from + a_fwd * hitDist;
         return true;
+    }
+        return false;
     }
 
     bool MarchLandHeight(const RE::NiPoint3& a_from, const RE::NiPoint3& a_fwd,
@@ -196,29 +229,19 @@ void LookPinRenderer::Draw() {
         constexpr float kEyeHeight = 120.0f;
         RE::NiPoint3 camPos = player->GetPosition();
         camPos.z += kEyeHeight;
+        if (const auto* orbit = OrbitCameraNode()) {
+            camPos = orbit->world.translate;
+        }
 
         camPos += fwd * kRayStartOffset;
         _targetIsLand = false;
 
-        RE::NiPoint3 havokPos{};
-        const bool havokHit = RaycastForward(cell, camPos, fwd, havokPos);
-        const float havokDist = havokHit ? (havokPos - camPos).Length() : 0.0f;
-
-        RE::NiPoint3 landPos{};
-        bool landHit = false;
-        if (!havokHit || havokDist < kNearHitReject) {
-            landHit = MarchLandHeight(camPos, fwd, landPos);
-        }
-
-        const float landDist = landHit ? (landPos - camPos).Length() : 0.0f;
-
-        const bool havokUsable = havokHit && havokDist > kSelfHitReject;
-
-        if (havokUsable && (!landHit || landDist <= havokDist + kNearHitReject)) {
-            _targetPos = havokPos;
+        RE::NiPoint3 hitPos{};
+        if (RaycastForward(cell, camPos, fwd, hitPos)) {
+            _targetPos = hitPos;
             _hasTarget = true;
-        } else if (landHit) {
-            _targetPos = landPos;
+        } else if (MarchLandHeight(camPos, fwd, hitPos)) {
+            _targetPos = hitPos;
             _targetIsLand = true;
             _hasTarget = true;
         }
@@ -237,44 +260,11 @@ void LookPinRenderer::Draw() {
             _lastHitValid = true;
         }
 
-        static int s_lastRayState = -1;
-        const int rayState = !_hasTarget ? 0 : (_targetIsLand ? 1 : 2);
-        if (rayState != s_lastRayState) {
-            s_lastRayState = rayState;
-            SKSE::log::info(
-                "LookPin ray: chose={} havok={} havokD={:.0f} land={} landD={:.0f} "
-                "fwd=({:.3f},{:.3f},{:.3f}) target=({:.1f},{:.1f},{:.1f}) cam=({:.1f},{:.1f},{:.1f})",
-                _targetIsLand ? "LAND" : (_hasTarget ? "HAVOK" : "NONE"),
-                havokHit ? (havokUsable ? "y" : "SELF") : "n", havokDist,
-                landHit ? "y" : "n", landDist,
-                fwd.x, fwd.y, fwd.z,
-                _targetPos.x, _targetPos.y, _targetPos.z,
-                camPos.x, camPos.y, camPos.z);
-        }
-
-        {
-            static int s_lastDir = INT_MIN;
-            const float fwdYaw = std::atan2(fwd.x, fwd.y) * 57.2957795f;
-            const int dirKey = static_cast<int>(fwdYaw) * 1000 + static_cast<int>(fwd.z * 100.0f);
-            if (dirKey != s_lastDir) {
-                s_lastDir = dirKey;
-                SKSE::log::info(
-                    "LookPin axis: fwdYaw={:.1f} bodyYaw={:.1f} camPitch={:.1f} bodyPitch={:.1f} "
-                    "fwd=({:.3f},{:.3f},{:.3f}) camPos=({:.1f},{:.1f},{:.1f})",
-                    fwdYaw, player->GetAngleZ() * 57.2957795f,
-                    std::asin(std::clamp(-fwd.z, -1.0f, 1.0f)) * 57.2957795f,
-                    player->GetAngleX() * 57.2957795f,
-                    fwd.x, fwd.y, fwd.z, camPos.x, camPos.y, camPos.z);
-            }
-        }
     }
 
     const double nowSec = ImGui::GetTime();
 
     if (pressed) {
-        SKSE::log::info("LookPin press: active={} hasTarget={} isLand={} -> {}",
-                        _active, _hasTarget, _targetIsLand,
-                        !_active ? "ENTER" : (_hasTarget ? "PLACE" : "no-target"));
 
         if (!_active) {
             _active = true;

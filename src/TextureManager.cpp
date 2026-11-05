@@ -4,6 +4,7 @@
 #include <map>
 #include "TextureManager.h"
 #include "MarkerManager.h"
+#include "PNGIIBridge.h"
 
 #include <RE/Skyrim.h>
 #include <SKSE/SKSE.h>
@@ -31,7 +32,7 @@ namespace TextureManager {
     static ID3D11Device* g_Device = nullptr;
     static std::unordered_map<std::string, Entry> g_TextureCache;
     static std::unordered_map<ID3D11ShaderResourceView*, Size> g_SizeBySrv;
-    static std::unordered_map<ID3D11ShaderResourceView*, std::wstring> g_SvgSourceBySrv;
+    static std::unordered_map<ID3D11ShaderResourceView*, std::string> g_SvgSourceBySrv;
     // (base SRV, px) -> exact-size raster; nullptr = failed, use base.
     static std::map<std::pair<ID3D11ShaderResourceView*, int>, ID3D11ShaderResourceView*> g_ExactBySize;
 
@@ -84,11 +85,9 @@ namespace TextureManager {
         return p.substr(0, p.size() - 4) + ext;
     }
 
-    static HRESULT RasterizeSVGFile(const std::wstring& wpath, SvgKind kind, DirectX::ScratchImage& out,
+
+    static HRESULT RasterizeSVG(const std::string& bytes, SvgKind kind, DirectX::ScratchImage& out,
                                     int iconPx = kSvgIconPx) {
-        std::ifstream file(wpath, std::ios::binary);
-        if (!file) return E_FAIL;
-        const std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
         const auto doc = lunasvg::Document::loadFromData(bytes.data(), bytes.size());
         if (!doc || doc->width() <= 0.0f || doc->height() <= 0.0f) return E_FAIL;
 
@@ -155,7 +154,7 @@ namespace TextureManager {
         logger::info("TextureManager shutdown");
     }
 
-    ID3D11ShaderResourceView* GetTexture(const std::string& path) {
+    static ID3D11ShaderResourceView* LoadCached(const std::string& path, bool a_packIcon) {
         if (!g_Device) return nullptr;
         auto it = g_TextureCache.find(path);
         if (it != g_TextureCache.end()) {
@@ -171,16 +170,25 @@ namespace TextureManager {
         }
 
         // Folder first, extension second: the PNG wins in its folder, primary wins over legacy.
-        const SvgKind svgKind = SvgKindFor(path);
+        const SvgKind svgKind = a_packIcon ? SvgKind::kIcon : SvgKindFor(path);
         std::vector<std::string> candidates{ path };
-        if (svgKind != SvgKind::kNone) candidates.push_back(SwapExt(path, ".svg"));
+        if (svgKind != SvgKind::kNone && !a_packIcon) candidates.push_back(SwapExt(path, ".svg"));
         if (altPath != path) {
             candidates.push_back(altPath);
             if (svgKind != SvgKind::kNone) candidates.push_back(SwapExt(altPath, ".svg"));
         }
+        const bool viaApi = a_packIcon && PNGIIBridge::CanReadFiles();
+        std::string fileBytes;
 
         std::wstring wpath;
         bool isSvg = false;
+        if (viaApi) {
+            if (!PNGIIBridge::ReadPackFile(path, fileBytes)) {
+                g_TextureCache[path] = Entry{ nullptr, 0, 0 };
+                return nullptr;
+            }
+            isSvg = EndsWithNoCase(path, ".svg");
+        } else {
         for (const auto& c : candidates) {
             std::wstring wc = UTF8ToWide(c);
             if (std::filesystem::exists(wc)) {
@@ -193,13 +201,18 @@ namespace TextureManager {
             g_TextureCache[path] = Entry{ nullptr, 0, 0 };
             return nullptr;
         }
+            if (isSvg) {
+                std::ifstream file(wpath, std::ios::binary);
+                if (file) fileBytes.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+            }
+        }
 
         // The first existing candidate is final; a failed decode caches the miss.
         DirectX::ScratchImage image;
         HRESULT hr = S_OK;
         if (isSvg) {
             const auto t0 = std::chrono::steady_clock::now();
-            hr = RasterizeSVGFile(wpath, svgKind, image);
+            hr = RasterizeSVG(fileBytes, svgKind, image);
             const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now() - t0).count();
             if (FAILED(hr)) {
@@ -210,12 +223,10 @@ namespace TextureManager {
             logger::debug("TextureManager: SVG '{}' rastered {}x{} in {} us", path,
                 image.GetMetadata().width, image.GetMetadata().height, us);
         } else {
-            hr = DirectX::LoadFromWICFile(
-                wpath.c_str(),
-                DirectX::WIC_FLAGS_IGNORE_SRGB,
-                nullptr,
-                image
-            );
+            hr = viaApi
+                ? DirectX::LoadFromWICMemory(reinterpret_cast<const std::uint8_t*>(fileBytes.data()), fileBytes.size(),
+                      DirectX::WIC_FLAGS_IGNORE_SRGB, nullptr, image)
+                : DirectX::LoadFromWICFile(wpath.c_str(), DirectX::WIC_FLAGS_IGNORE_SRGB, nullptr, image);
             if (FAILED(hr)) {
                 logger::warn("TextureManager: WIC load failed for '{}' hr=0x{:08X}",
                     path, static_cast<uint32_t>(hr));
@@ -225,7 +236,7 @@ namespace TextureManager {
         }
         const std::uint32_t srcW = static_cast<std::uint32_t>(image.GetMetadata().width);
         const std::uint32_t srcH = static_cast<std::uint32_t>(image.GetMetadata().height);
-        const bool generateMipmaps = path.find("\\Icons\\") != std::string::npos ||
+        const bool generateMipmaps = a_packIcon || path.find("\\Icons\\") != std::string::npos ||
                                      path.find("\\Images\\") != std::string::npos;
         DirectX::ScratchImage mipChain;
         const DirectX::ScratchImage* imageToUse = &image;
@@ -297,8 +308,12 @@ namespace TextureManager {
         }
         g_TextureCache[path] = Entry{ srv, srcW, srcH };
         g_SizeBySrv[srv] = Size{ srcW, srcH };
-        if (isSvg && svgKind == SvgKind::kIcon) g_SvgSourceBySrv[srv] = wpath;
+        if (isSvg && svgKind == SvgKind::kIcon) g_SvgSourceBySrv[srv] = std::move(fileBytes);
         return srv;
+    }
+
+    ID3D11ShaderResourceView* GetTexture(const std::string& path) {
+        return LoadCached(path, false);
     }
 
     ID3D11ShaderResourceView* GetIconAtPixelSize(ID3D11ShaderResourceView* base, int px) {
@@ -313,7 +328,7 @@ namespace TextureManager {
         g_ExactBySize[key] = nullptr;
 
         DirectX::ScratchImage image;
-        if (FAILED(RasterizeSVGFile(src->second, SvgKind::kIcon, image, px))) return base;
+        if (FAILED(RasterizeSVG(src->second, SvgKind::kIcon, image, px))) return base;
         ID3D11Resource* texture = nullptr;
         if (FAILED(DirectX::CreateTexture(g_Device, image.GetImages(), image.GetImageCount(),
                                           image.GetMetadata(), &texture))) {
@@ -333,7 +348,11 @@ namespace TextureManager {
         return srv;
     }
 
-    ID3D11ShaderResourceView* GetCategoryIcon(std::uint32_t iconType) {
+
+    ID3D11ShaderResourceView* GetCategoryIcon(std::uint32_t iconType, bool a_local) {
+        if (const auto* pack = PNGIIBridge::MapIconPath(iconType, a_local)) {
+            if (auto* srv = LoadCached(*pack, true)) return srv;
+        }
         std::string path = std::string(GetIconsPath()) + CategoryToFilename(iconType) + ".png";
         return GetTexture(path);
     }
@@ -341,6 +360,10 @@ namespace TextureManager {
     ID3D11ShaderResourceView* GetIconByName(const std::string& name) {
         std::string path = std::string(GetIconsPath()) + name + ".png";
         return GetTexture(path);
+    }
+
+    ID3D11ShaderResourceView* GetPackIcon(const std::string& a_path) {
+        return LoadCached(a_path, true);
     }
 
     Size GetTextureSize(ID3D11ShaderResourceView* srv) {

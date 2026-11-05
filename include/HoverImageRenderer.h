@@ -4,11 +4,13 @@
 
 
 #include <RE/Skyrim.h>
+#include <string>
 
 namespace HoverImageRenderer {
     void Init();
 
     void SampleCardState(RE::MapMenu* a_menu);
+    bool IsWithinHoverRange(RE::MapMenu* a_menu, std::int32_t a_idx);
 
     void Draw();
 
@@ -23,4 +25,5 @@ namespace HoverImageRenderer {
     bool IsHoveredDiscovered();
 
     bool IsHoveredUndiscovered();
+    std::string FormatMarkerDistance(float a_units, int a_unitSystem);
 }

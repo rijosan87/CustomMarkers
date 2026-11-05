@@ -163,12 +163,16 @@ private:
 
     float _combatFade = 0.0f;
     float _lastCombatTime = -10.0f;
+    float _rimCombatFade = 1.0f;
 
     struct ActorGhost {
         RE::NiPoint3 position;                            // live per-frame while in radius; frozen after leave
         ActorMarkerSource::ActorMarker::Allegiance allegiance;
         std::chrono::steady_clock::time_point lastSeen;   // refreshed while live
         bool  frozen = false;                             // true once out of radius/dead
+        bool  engaged = false;
+        std::string   name;
+        std::uint16_t level = 0;
         float alpha  = 0.0f;                              // 0..1, ramped by the merge fade machine; draw multiplies by it
     };
     std::unordered_map<RE::FormID, ActorGhost> _actorGhosts;

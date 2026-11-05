@@ -4,7 +4,9 @@
 
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <string>
 
 #include <SKSE/Interfaces.h>
@@ -26,8 +28,24 @@ namespace MarkerFilterHook {
         kModded,
         kCount
     };
+    inline constexpr const char* kModeIcons[] = {
+        "city",
+        "stable",
+        "cave",
+        "camp",
+        "smelter",
+        "landmark",
+        "dwelling",
+        "quest",
+        "shop",
+        "loot",
+        "custom",
+    };
+    static_assert(std::size(kModeIcons) == static_cast<std::size_t>(FocusMode::kCount),
+                  "kModeIcons must stay in sync with FocusMode");
 
     void Install();
+    FocusMode ModeForRef(RE::TESObjectREFR* a_refr, std::uint16_t a_markerType);
 
     const char* GetModeName(FocusMode a_mode);
 

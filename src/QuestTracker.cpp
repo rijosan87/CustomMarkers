@@ -5,6 +5,9 @@
 #include <SKSE/SKSE.h>
 #include <Windows.h>
 #include <algorithm>
+#include <chrono>
+#include <format>
+#include <memory>
 #include <set>
 #include <tuple>
 #include <unordered_map>
@@ -385,127 +388,52 @@ namespace {
             }
         }
     }
-}
-
-QuestTracker* QuestTracker::GetSingleton() {
-    static QuestTracker singleton;
-    return &singleton;
-}
-
-void QuestTracker::Refresh() {
-    auto* tasks = SKSE::GetTaskInterface();
-    if (!tasks) {
-        return;
-    }
-
-    std::uint64_t generation;
+    void CollectCompassRefs(
+        ActiveQuestRow& a_row,
+        RE::TESQuest* a_quest,
+        RE::BGSQuestObjective* a_objective,
+        const std::vector<RE::TESQuestTarget*>& a_eligible,
+        bool a_miscOnly)
     {
-        std::lock_guard lock(_mutex);
-        _sessionActive = true;
-        if (_refreshPending) {
-            return;
+        const auto add = [&](RE::FormID a_id) {
+            if (a_id != 0 &&
+                std::find(a_row.compassRefIDs.begin(), a_row.compassRefIDs.end(), a_id) == a_row.compassRefIDs.end()) {
+                a_row.compassRefIDs.push_back(a_id);
         }
-        _refreshPending = true;
-        generation = _generation;
-    }
-    // Debug level: fires every frame while the map is open.
-    if (Settings::GetSingleton()->questRowLog) {
-        logger::debug("[QuestRefresh] generation={} phase=request thread={}", generation, GetCurrentThreadId());
-    }
-    tasks->AddTask([this, generation]() {
-        RefreshOnGameThread(generation);
-    });
-}
-
-void QuestTracker::Reset() {
-    std::uint64_t generation;
-    bool pending;
-    {
-        std::lock_guard lock(_mutex);
-        if (!_sessionActive) {
-            return;
-        }
-        _sessionActive = false;
-        generation = ++_generation;
-        _rows.clear();
-        // Keep the slot claimed until the obsolete task retires. Close/reopen
-        // must not build a queue of tasks while the paused map isn't servicing it.
-        pending = _refreshPending;
-    }
-    if (Settings::GetSingleton()->questRowLog) {
-        logger::info("[QuestRefresh] generation={} phase=reset pending={} thread={}",
-                     generation, pending, GetCurrentThreadId());
+        };
+        for (auto* target : a_eligible) {
+            if (!target) continue;
+            if (a_miscOnly) {
+                bool authored = false;
+                for (std::uint32_t t = 0; a_objective && t < a_objective->numTargets; ++t) {
+                    if (a_objective->targets && a_objective->targets[t] == target) {
+                        authored = true;
+                        break;
     }
 }
 
-void QuestTracker::RefreshOnGameThread(std::uint64_t a_generation) {
-    const bool qlog = Settings::GetSingleton()->questRowLog;
-    const auto complete = [&](std::vector<ActiveQuestRow> a_rows, bool a_publish, const char* a_reason) {
-        if (a_publish) {
-            auto* ui = RE::UI::GetSingleton();
-            if (!ui || !ui->IsMenuOpen(RE::MapMenu::MENU_NAME)) {
-                Reset();
-                a_publish = false;
-                a_reason = "map-closed";
+                if (!authored) continue;
+            }
+            if (auto ref = a_quest->GetAliasedRef(target->alias).get()) {
+                add(ref->GetFormID());
+        }
+            const auto* path = reinterpret_cast<const TargetTeleportPath*>(
+                reinterpret_cast<const std::uint8_t*>(target) + 0x18);
+            for (const auto& door : path->doors) {
+                if (door.doorRef) add(door.doorRef->GetFormID());
             }
         }
-        const auto count = a_rows.size();
-        {
-            std::lock_guard lock(_mutex);
-            if (a_generation != _generation || !_sessionActive) {
-                a_publish = false;
-                a_reason = "stale-generation";
-            }
-            if (a_publish) {
-                _rows = std::move(a_rows);
-            }
-            _refreshPending = false;
-        }
-        if (qlog) {
-            // A routine published refresh repeats every frame: debug only.
-            // Anything else (stale, map closed, missing player) stays at info.
-            if (a_publish && std::string_view(a_reason) == "collected") {
-                logger::debug("[QuestRefresh] generation={} phase=complete published={} rows={} reason={} thread={}",
-                              a_generation, a_publish, count, a_reason, GetCurrentThreadId());
-            } else {
-                logger::info("[QuestRefresh] generation={} phase=complete published={} rows={} reason={} thread={}",
-                             a_generation, a_publish, count, a_reason, GetCurrentThreadId());
-            }
-        }
-    };
-
-    if (qlog) {
-        logger::debug("[QuestRefresh] generation={} phase=execute thread={}", a_generation, GetCurrentThreadId());
     }
-    bool current;
+    std::vector<ActiveQuestRow> CollectRows(
+        RE::PlayerCharacter* player,
+        RE::TESDataHandler* dh,
+        const std::vector<HUDMarkerHook::QuestMarker>& markers,
+        RE::TESWorldSpace* playerWorld,
+        bool qlog)
     {
-        std::lock_guard lock(_mutex);
-        current = a_generation == _generation && _sessionActive;
-    }
-    if (!current) {
-        complete({}, false, "stale-generation");
-        return;
-    }
-    auto* ui = RE::UI::GetSingleton();
-    if (!ui || !ui->IsMenuOpen(RE::MapMenu::MENU_NAME)) {
-        Reset();
-        complete({}, false, "map-closed");
-        return;
-    }
 
     std::vector<ActiveQuestRow> rows;
 
-    auto* player = RE::PlayerCharacter::GetSingleton();
-    auto* dh = RE::TESDataHandler::GetSingleton();
-    if (!player || !dh) {
-        complete({}, true, !player ? "missing-player" : "missing-data-handler");
-        return;
-    }
-    const auto markers = HUDMarkerHook::GetQuestMarkers();
-    auto* playerWorld = player->GetWorldspace();
-
-    std::vector<std::string> logBlock;
-    g_logBlock = qlog ? &logBlock : nullptr;
 
     for (auto* quest : dh->GetFormArray<RE::TESQuest>()) {
         if (!quest || !quest->IsRunning()) continue;
@@ -536,6 +464,7 @@ void QuestTracker::RefreshOnGameThread(std::uint64_t a_generation) {
         const char* eligibilityReason = nullptr;
         const auto eligibleTargets = CopyEligibleTargets(player, quest, eligibilityReason);
         ResolveObjectivePosition(row, quest, firstObj, markers, playerWorld, true, eligibleTargets, eligibilityReason);
+            CollectCompassRefs(row, quest, nullptr, eligibleTargets, false);
         rows.push_back(std::move(row));
     }
 
@@ -618,6 +547,7 @@ void QuestTracker::RefreshOnGameThread(std::uint64_t a_generation) {
             const char* eligibilityReason = nullptr;
             const auto eligibleTargets = CopyEligibleTargets(player, quest, eligibilityReason);
             ResolveObjectivePosition(row, quest, objective, markers, playerWorld, false, eligibleTargets, eligibilityReason);
+                CollectCompassRefs(row, quest, objective, eligibleTargets, true);
             rows.push_back(std::move(row));
         }
     } else if (player && !masterOn && qlog) {
@@ -634,6 +564,125 @@ void QuestTracker::RefreshOnGameThread(std::uint64_t a_generation) {
                          r.position.x, r.position.y, r.position.z);
         }
     }
+
+        return rows;
+    }
+}
+
+QuestTracker* QuestTracker::GetSingleton() {
+    static QuestTracker singleton;
+    return &singleton;
+}
+
+void QuestTracker::Refresh() {
+    auto* tasks = SKSE::GetTaskInterface();
+    if (!tasks) {
+        return;
+    }
+
+    std::uint64_t generation;
+    {
+        std::lock_guard lock(_mutex);
+        _sessionActive = true;
+        if (_refreshPending) {
+            return;
+        }
+        _refreshPending = true;
+        generation = _generation;
+    }
+    if (Settings::GetSingleton()->questRowLog) {
+        logger::debug("[QuestRefresh] generation={} phase=request thread={}", generation, GetCurrentThreadId());
+    }
+    tasks->AddTask([this, generation]() {
+        RefreshOnGameThread(generation);
+    });
+}
+
+void QuestTracker::Reset() {
+    std::uint64_t generation;
+    bool pending;
+    {
+        std::lock_guard lock(_mutex);
+        if (!_sessionActive) {
+            return;
+        }
+        _sessionActive = false;
+        generation = ++_generation;
+        _rows.clear();
+        pending = _refreshPending;
+    }
+    if (Settings::GetSingleton()->questRowLog) {
+        logger::info("[QuestRefresh] generation={} phase=reset pending={} thread={}",
+                     generation, pending, GetCurrentThreadId());
+    }
+}
+
+void QuestTracker::RefreshOnGameThread(std::uint64_t a_generation) {
+    const bool qlog = Settings::GetSingleton()->questRowLog;
+    const auto complete = [&](std::vector<ActiveQuestRow> a_rows, bool a_publish, const char* a_reason) {
+        if (a_publish) {
+            auto* ui = RE::UI::GetSingleton();
+            if (!ui || !ui->IsMenuOpen(RE::MapMenu::MENU_NAME)) {
+                Reset();
+                a_publish = false;
+                a_reason = "map-closed";
+            }
+        }
+        const auto count = a_rows.size();
+        {
+            std::lock_guard lock(_mutex);
+            if (a_generation != _generation || !_sessionActive) {
+                a_publish = false;
+                a_reason = "stale-generation";
+            }
+            if (a_publish) {
+                _rows = std::move(a_rows);
+            }
+            _refreshPending = false;
+        }
+        if (qlog) {
+            if (a_publish && std::string_view(a_reason) == "collected") {
+                logger::debug("[QuestRefresh] generation={} phase=complete published={} rows={} reason={} thread={}",
+                              a_generation, a_publish, count, a_reason, GetCurrentThreadId());
+            } else {
+                logger::info("[QuestRefresh] generation={} phase=complete published={} rows={} reason={} thread={}",
+                             a_generation, a_publish, count, a_reason, GetCurrentThreadId());
+            }
+        }
+    };
+
+    if (qlog) {
+        logger::debug("[QuestRefresh] generation={} phase=execute thread={}", a_generation, GetCurrentThreadId());
+    }
+    bool current;
+    {
+        std::lock_guard lock(_mutex);
+        current = a_generation == _generation && _sessionActive;
+    }
+    if (!current) {
+        complete({}, false, "stale-generation");
+        return;
+    }
+    auto* ui = RE::UI::GetSingleton();
+    if (!ui || !ui->IsMenuOpen(RE::MapMenu::MENU_NAME)) {
+        Reset();
+        complete({}, false, "map-closed");
+        return;
+    }
+
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    auto* dh = RE::TESDataHandler::GetSingleton();
+    if (!player || !dh) {
+        complete({}, true, !player ? "missing-player" : "missing-data-handler");
+        return;
+    }
+    const auto markers = HUDMarkerHook::GetQuestMarkers();
+    auto* playerWorld = player->GetWorldspace();
+
+    std::vector<std::string> logBlock;
+    g_logBlock = qlog ? &logBlock : nullptr;
+
+    auto rows = CollectRows(player, dh, markers, playerWorld, qlog);
 
     g_logBlock = nullptr;
     if (qlog) {
@@ -654,4 +703,61 @@ void QuestTracker::RefreshOnGameThread(std::uint64_t a_generation) {
 std::vector<ActiveQuestRow> QuestTracker::Get() {
     std::lock_guard lock(_mutex);
     return _rows;
+}
+
+std::shared_ptr<const std::vector<ActiveQuestRow>> QuestTracker::GetRadarRows() {
+    std::lock_guard lock(_mutex);
+    return _radarRows;
+}
+
+void QuestTracker::RequestRadarRefresh() {
+    auto* tasks = SKSE::GetTaskInterface();
+    if (!tasks) {
+        return;
+    }
+
+    std::uint64_t generation;
+    {
+        std::lock_guard lock(_mutex);
+        if (_radarPending) {
+            return;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now - _radarLastRequest < std::chrono::seconds(1)) {
+            return;
+        }
+        _radarPending = true;
+        _radarLastRequest = now;
+        generation = _radarGeneration;
+    }
+    tasks->AddTask([this, generation]() {
+        RefreshRadarOnGameThread(generation);
+    });
+}
+
+void QuestTracker::ResetRadar() {
+    std::lock_guard lock(_mutex);
+    ++_radarGeneration;
+    _radarRows.reset();
+}
+
+void QuestTracker::RefreshRadarOnGameThread(std::uint64_t a_generation) {
+    std::shared_ptr<const std::vector<ActiveQuestRow>> published;
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    auto* dh = RE::TESDataHandler::GetSingleton();
+    if (player && dh) {
+        const auto markers = HUDMarkerHook::GetQuestMarkers();
+        auto* playerWorld = player->GetWorldspace();
+        std::vector<std::string> discard;
+        g_logBlock = &discard;
+        published = std::make_shared<const std::vector<ActiveQuestRow>>(
+            CollectRows(player, dh, markers, playerWorld, Settings::GetSingleton()->questRowLog));
+        g_logBlock = nullptr;
+    }
+
+    std::lock_guard lock(_mutex);
+    if (published && a_generation == _radarGeneration) {
+        _radarRows = std::move(published);
+    }
+    _radarPending = false;
 }

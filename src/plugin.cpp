@@ -25,6 +25,8 @@
 #include "LootBeamRenderer.h"
 #include "LootBeamBlacklist.h"
 #include "TCCItemStatus.h"
+#include "PNGIIBridge.h"
+#include "RimMarkerSource.h"
 #include "InputHook.h"
 // #include "LocalMapHudSpike.h"
 #include "Settings.h"
@@ -345,6 +347,7 @@ void SKSEMessageListener(SKSE::MessagingInterface::Message *a_msg) {
     HoverImageRenderer::Init();
     LootBeamBlacklist::Load();
     TCCItemStatus::Init();
+    PNGIIBridge::Init();
     LootBeamRenderer::GetSingleton()->InstallEventSink();
     RenderTargetUpscaler::Apply();
     SettingsMenu::RegisterWithMenuFramework();
@@ -352,10 +355,13 @@ void SKSEMessageListener(SKSE::MessagingInterface::Message *a_msg) {
 
   case SKSE::MessagingInterface::kPreLoadGame:
     QuestTracker::GetSingleton()->Reset();
+    QuestTracker::GetSingleton()->ResetRadar();
     break;
 
   case SKSE::MessagingInterface::kPostLoadGame:
     logger::info("kPostLoadGame message received");
+    PNGIIBridge::RequestFill();
+    RimMarkerSource::Invalidate();
 
     if (auto input = RE::BSInputDeviceManager::GetSingleton()) {
       input->AddEventSink(&g_inputHandler);
@@ -370,7 +376,10 @@ void SKSEMessageListener(SKSE::MessagingInterface::Message *a_msg) {
 
   case SKSE::MessagingInterface::kNewGame:
     logger::info("kNewGame message received");
+    PNGIIBridge::RequestFill();
+    RimMarkerSource::Invalidate();
     QuestTracker::GetSingleton()->Reset();
+    QuestTracker::GetSingleton()->ResetRadar();
     EntityMarkerSource::ClearDiscovered();
     LootBeamRenderer::GetSingleton()->ClearLootedHolders();
     LootBeamRenderer::GetSingleton()->ClearInspectedHolders();
@@ -442,6 +451,7 @@ static void LoadCallback(SKSE::SerializationInterface *serde) {
 
 static void RevertCallback(SKSE::SerializationInterface *serde) {
   QuestTracker::GetSingleton()->Reset();
+  QuestTracker::GetSingleton()->ResetRadar();
   MarkerManager::GetSingleton()->OnRevert(serde);
   PathTracker::GetSingleton()->OnRevert();
   LootBeamRenderer::GetSingleton()->ClearLootedHolders();

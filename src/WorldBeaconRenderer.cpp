@@ -21,6 +21,7 @@
 #include <cmath>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -184,12 +185,14 @@ namespace {
         entry.y = a_marker.position.y;
         entry.cellID = cellID;
 
-        if (a_marker.origin == MarkerOrigin::LookAndPin) {
+        const bool isLocalDoor = a_marker.id == kVanillaDestId &&
+                                 MarkerManager::GetSingleton()->IsVanillaDestFromLocalDoor();
+        if (a_marker.origin == MarkerOrigin::LookAndPin || isLocalDoor) {
             entry.groundZ = a_marker.position.z;
             entry.hit = true;
             g_groundCache[a_marker.id] = entry;
             if (Settings::GetSingleton()->beaconVerboseLog) {
-                SKSE::log::info("Beacon[{}] groundZ=STORED_LOOK_PIN {:.1f} (xy {:.1f},{:.1f} cell {:08X})",
+                SKSE::log::info("Beacon[{}] groundZ=STORED {:.1f} (xy {:.1f},{:.1f} cell {:08X})",
                                 a_marker.id, entry.groundZ, entry.x, entry.y, cellID);
             }
             return entry.groundZ;
@@ -199,6 +202,17 @@ namespace {
         float landZ = 0.0f;
         const bool isExterior = a_cell && a_cell->IsExteriorCell();
         const bool hasLand = isExterior && tes && tes->GetLandHeight(a_marker.position, landZ);
+        constexpr float kMapPlaneFloor = 100000.0f;
+        if (a_marker.id == kVanillaDestId && a_marker.position.z < kMapPlaneFloor) {
+            entry.groundZ = hasLand ? (std::max)(a_marker.position.z, landZ) : a_marker.position.z;
+            entry.hit = true;
+            g_groundCache[a_marker.id] = entry;
+            if (Settings::GetSingleton()->beaconVerboseLog) {
+                SKSE::log::info("Beacon[{}] groundZ=STORED_VANILLA {:.1f} (stored {:.1f} hasLand={} landZ {:.1f} xy {:.1f},{:.1f} cell {:08X})",
+                                a_marker.id, entry.groundZ, a_marker.position.z, hasLand, landZ, entry.x, entry.y, cellID);
+            }
+            return entry.groundZ;
+        }
 
         if (hasLand) {
             constexpr float kLandProbeUp   = 1500.0f;
@@ -423,17 +437,42 @@ void WorldBeaconRenderer::Draw() {
     }
 
     if (settings->navBeaconClearOnArrival) {
+        static std::unordered_set<std::uint32_t> s_armedTemporaries;
+        std::erase_if(s_armedTemporaries, [&](std::uint32_t a_id) {
+            return std::none_of(activeDestinations.begin(), activeDestinations.end(),
+                                [a_id](const MapMarker& a_m) { return a_m.id == a_id; });
+        });
         bool arrived = false;
         for (const auto& m : activeDestinations) {
             const float dx = m.position.x - playerPos.x;
             const float dy = m.position.y - playerPos.y;
             const float distUnits = std::sqrt(dx * dx + dy * dy);
-            if (distUnits > settings->navBeaconFadeNearUnits) continue;
 
             const bool temporary =
                 m.id != kVanillaDestId &&
                 (m.origin == MarkerOrigin::LookAndPin ||
                  m.origin == MarkerOrigin::InspectQuickMark);
+            const bool localDoor = m.id == kVanillaDestId &&
+                                   MarkerManager::GetSingleton()->IsVanillaDestFromLocalDoor();
+            static RE::NiPoint3 s_armedDoorPos{};
+            static bool s_doorArmed = false;
+            if (localDoor && s_doorArmed &&
+                (std::fabs(s_armedDoorPos.x - m.position.x) > 1.0f ||
+                 std::fabs(s_armedDoorPos.y - m.position.y) > 1.0f)) {
+                s_doorArmed = false;
+            }
+
+            if (distUnits > settings->navBeaconFadeNearUnits) {
+                if (temporary) s_armedTemporaries.insert(m.id);
+                if (localDoor) {
+                    s_armedDoorPos = m.position;
+                    s_doorArmed = true;
+                }
+                continue;
+            }
+            if (temporary && !s_armedTemporaries.contains(m.id)) continue;
+            if (localDoor && !s_doorArmed) continue;
+            if (localDoor) s_doorArmed = false;
 
             auto* manager = MarkerManager::GetSingleton();
             const bool removed = temporary && manager->RemoveMarker(m.id);

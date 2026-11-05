@@ -372,6 +372,10 @@ namespace MarkerFilterHook {
                      targetAddr, g_trampolineAddr);
     }
 
+    FocusMode ModeForRef(RE::TESObjectREFR* a_refr, std::uint16_t a_markerType) {
+        return ResolveModeForRef(a_refr, a_markerType);
+    }
+
     const char* GetModeName(FocusMode a_mode) {
         const auto i = static_cast<std::size_t>(a_mode);
         return i < kModeCount ? kModeNames[i] : "";

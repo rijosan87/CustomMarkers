@@ -18,6 +18,10 @@
 #include "RenderTargetUpscaler.h"
 #include "HUDMarkerHook.h"
 #include "CompassHook.h"   // WorldMatches() -- shared with the compass
+#include "RimMarkerSource.h"
+#include "HoverImageRenderer.h"
+#include "QuestTracker.h"
+#include <unordered_set>
 #include "GlanceBounds.h"
 #include "PartySheetState.h"
 #include "FontManager.h"
@@ -31,8 +35,13 @@
 #include <wrl/client.h>
 #include <Windows.h>
 #include <algorithm>
+#include <limits>
 #include <cmath>
+#include <format>
+#include <memory>
+#include <string>
 #include <utility>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -126,6 +135,19 @@ namespace {
         const float refreshSeconds = settling ? kSpaceSettleRetrySeconds
                                               : kInspectRefreshSeconds;
         return diff > refreshSeconds * 1000.0f;
+    }
+    ID3D11ShaderResourceView* RimMarkerIcon(const RimMarkerSource::Entry& a_entry) {
+        if (!a_entry.packPath.empty()) {
+            if (auto* srv = TextureManager::GetPackIcon(a_entry.packPath)) return srv;
+        }
+        if (a_entry.undiscovered) return TextureManager::GetIconByName("undiscovered");
+        if (a_entry.type > 59) {
+            return TextureManager::GetIconByName(MarkerFilterHook::kModeIcons[static_cast<std::size_t>(a_entry.mode)]);
+        }
+        if (a_entry.type == 30) return TextureManager::GetIconByName("shack_house");
+        if (a_entry.type >= 35 && a_entry.type <= 52) return TextureManager::GetCategoryIcon(1);
+        if (a_entry.type == 57 || a_entry.type == 58) return TextureManager::GetCategoryIcon(21);
+        return TextureManager::GetCategoryIcon(a_entry.type);
     }
 
     ImVec2 WorldToGlance(const RE::NiPoint3& a_world,
@@ -355,6 +377,162 @@ namespace {
         dl->AddLine(a_origin, e1, FadeCol(IM_COL32(255, 255, 255, 60), a_alpha), UIScale::Px(1.0f));
         dl->AddLine(a_origin, e2, FadeCol(IM_COL32(255, 255, 255, 60), a_alpha), UIScale::Px(1.0f));
     }
+    const RimMarkerSource::Entry* PickLookAtMarker(const std::vector<RimMarkerSource::Entry>& a_entries,
+                                                   const std::vector<const RimMarkerSource::Entry*>& a_priority,
+                                                   const RE::NiPoint3& a_player, float a_cameraAngle,
+                                                   float a_range) {
+        constexpr float kTieBand = 0.05235988f;
+        constexpr float kSwitchBand = 0.08726646f;
+        static RE::FormID current = 0;
+
+        struct Candidate {
+            const RimMarkerSource::Entry* entry;
+            float offset;
+            float dist;
+        };
+        std::vector<Candidate> inCone;
+        float smallest = kViewConeHalf;
+        const auto consider = [&](const RimMarkerSource::Entry& e, float a_maxDist) {
+            if (e.name.empty()) return;
+            const float dx = e.position.x - a_player.x;
+            const float dy = e.position.y - a_player.y;
+            const float dist = std::hypot(dx, dy);
+            if (dist >= a_maxDist) return;
+            const float offset = std::abs(std::remainder(std::atan2(dx, dy) - a_cameraAngle, 6.2831853f));
+            if (offset > kViewConeHalf) return;
+            inCone.push_back({ &e, offset, dist });
+            smallest = (std::min)(smallest, offset);
+        };
+        for (const auto& e : a_entries) consider(e, a_range);
+        for (const auto* e : a_priority) {
+            if (e) consider(*e, (std::numeric_limits<float>::max)());
+        }
+
+        const Candidate* best = nullptr;
+        const Candidate* held = nullptr;
+        for (const auto& c : inCone) {
+            if (c.entry->formID == current) held = &c;
+            if (c.offset > smallest + kTieBand) continue;
+            if (!best || (c.entry->priority && !best->entry->priority) ||
+                (c.entry->priority == best->entry->priority && c.dist < best->dist)) {
+                best = &c;
+            }
+        }
+        if (!best) return nullptr;
+        if (held && held->offset <= best->offset + kSwitchBand &&
+            (held->entry->priority || !best->entry->priority)) {
+            return held->entry;
+        }
+        current = best->entry->formID;
+        return best->entry;
+    }
+
+    template <class Map>
+    const typename Map::mapped_type* PickLookAtEnemy(const Map& a_ghosts, const RE::NiPoint3& a_player,
+                                                      float a_cameraAngle) {
+        constexpr float kTieBand = 0.05235988f;
+        constexpr float kSwitchBand = 0.08726646f;
+        static RE::FormID current = 0;
+
+        struct Candidate {
+            RE::FormID id;
+            const typename Map::mapped_type* ghost;
+            float offset;
+            float dist;
+        };
+        std::vector<Candidate> inCone;
+        float smallest = kViewConeHalf;
+        for (const auto& [id, g] : a_ghosts) {
+            if (g.allegiance != ActorMarkerSource::ActorMarker::Allegiance::Hostile) continue;
+            if (g.frozen || g.alpha <= 0.0f || g.name.empty()) continue;
+            const float dx = g.position.x - a_player.x;
+            const float dy = g.position.y - a_player.y;
+            const float offset = std::abs(std::remainder(std::atan2(dx, dy) - a_cameraAngle, 6.2831853f));
+            if (offset > kViewConeHalf) continue;
+            inCone.push_back({ id, &g, offset, std::hypot(dx, dy) });
+            smallest = (std::min)(smallest, offset);
+        }
+
+        const Candidate* best = nullptr;
+        const Candidate* held = nullptr;
+        for (const auto& c : inCone) {
+            if (c.id == current) held = &c;
+            if (c.offset > smallest + kTieBand) continue;
+            if (!best || (c.ghost->engaged && !best->ghost->engaged) ||
+                (c.ghost->engaged == best->ghost->engaged && c.dist < best->dist)) {
+                best = &c;
+            }
+        }
+        if (!best) return nullptr;
+        if (held && held->offset <= best->offset + kSwitchBand &&
+            (held->ghost->engaged || !best->ghost->engaged)) {
+            return held->ghost;
+        }
+        current = best->id;
+        return best->ghost;
+    }
+
+    std::string TruncateUtf8(const std::string& a_text, std::size_t a_maxBytes) {
+        if (a_text.size() <= a_maxBytes) return a_text;
+        std::size_t cut = a_maxBytes;
+        while (cut > 0 && (static_cast<unsigned char>(a_text[cut]) & 0xC0) == 0x80) --cut;
+        return a_text.substr(0, cut) + "...";
+    }
+
+    constexpr RE::FormID kDestinationFocusId = 0xFFFFFFFF;
+
+    struct RimFocusAnim {
+        RE::FormID current = 0;
+        RE::FormID previous = 0;
+        float currentT = 0.0f;
+        float previousT = 0.0f;
+
+        void Update(RE::FormID a_focus, float a_dt) {
+            constexpr float kRampSeconds = 0.15f;
+            if (a_focus != current) {
+                previous = current;
+                previousT = currentT;
+                current = a_focus;
+                currentT = 0.0f;
+            }
+            currentT = (std::min)(1.0f, currentT + a_dt / kRampSeconds);
+            previousT = (std::max)(0.0f, previousT - a_dt / kRampSeconds);
+        }
+
+        float For(RE::FormID a_id) const {
+            if (a_id == current) return currentT;
+            return a_id == previous ? previousT : 0.0f;
+        }
+    };
+
+    struct RadarLabel {
+        RE::FormID id = 0;
+        std::string name;
+        std::string text;
+        std::string subtitle;
+        ID3D11ShaderResourceView* icon = nullptr;
+        bool dimmed = false;
+        float alpha = 0.0f;
+
+        void Update(RE::FormID a_id, const std::string& a_name, std::string a_text, std::string a_subtitle,
+                    ID3D11ShaderResourceView* a_icon, bool a_dimmed, float a_dt) {
+            constexpr float kFadeOutSeconds = 0.12f;
+            constexpr float kFadeInSeconds = 0.18f;
+            if (a_id != id || a_name != name) {
+                alpha = text.empty() ? 0.0f : alpha - a_dt / kFadeOutSeconds;
+                if (alpha > 0.0f) return;
+                alpha = 0.0f;
+                id = a_id;
+                name = a_name;
+            } else {
+                alpha = (std::min)(1.0f, alpha + a_dt / kFadeInSeconds);
+            }
+            text = std::move(a_text);
+            subtitle = std::move(a_subtitle);
+            icon = a_icon;
+            dimmed = a_dimmed;
+        }
+    };
 
     void DrawViewCone(ImDrawList* dl, const MapDraw::RoundedRectBoundary& a_boundary, float a_mapAngle,
                       float a_alpha = 1.0f) {
@@ -993,10 +1171,17 @@ void MinimapRenderer::Draw() {
         const float combatRate = std::clamp(dt / kCombatFadeSeconds, 0.0f, 1.0f);
         const float combatStep = std::clamp(combatTarget - _combatFade, -combatRate, combatRate);
         _combatFade = std::clamp(_combatFade + combatStep, 0.0f, 1.0f);
+        const bool hideRim = Settings::GetSingleton()->navRimMarkersHideInCombat && (now - _lastCombatTime < 3.0f);
+        const float rimTarget = hideRim ? 0.0f : 1.0f;
+        const float rimStep = std::clamp(rimTarget - _rimCombatFade, -combatRate, combatRate);
+        _rimCombatFade = std::clamp(_rimCombatFade + rimStep, 0.0f, 1.0f);
     }
 
     CollectActorsIfDue(frame);
     MergeActorGhosts();
+    if (frame.isExterior && glanceVisibleHere && Settings::GetSingleton()->navRimMarkersEnabled) {
+        RimMarkerSource::RequestUpdateIfDue();
+    }
 
     const unsigned snapshotViews = ((glanceVisibleHere && glanceAlpha > 0.0f) ? 1u : 0u) |
         ((inspectAlpha > 0.0f) ? 2u : 0u);
@@ -1024,6 +1209,9 @@ void MinimapRenderer::MergeActorGhosts() {
             auto& ghost = _actorGhosts[a.formID];   // inserts default if new
             ghost.position   = a.position;
             ghost.allegiance = a.allegiance;
+            ghost.engaged    = a.engaged;
+            ghost.name       = a.name;
+            ghost.level      = a.level;
             ghost.lastSeen   = now;
             ghost.frozen     = false;
         }
@@ -1036,6 +1224,8 @@ void MinimapRenderer::MergeActorGhosts() {
     auto* st = Settings::GetSingleton();
     const float r = st ? st->navActorProximityUnits : ActorMarkerSource::kActorProximityRadius;
     const float r2 = r * r;
+    const float hostileR = st ? st->navHostileRangeUnits() : ActorMarkerSource::kActorProximityRadius;
+    const float hostileR2 = hostileR * hostileR;
     for (auto& [formID, ghost] : _actorGhosts) {
         if (ghost.frozen) continue;
         auto* actor = RE::TESForm::LookupByID<RE::Actor>(formID);
@@ -1044,7 +1234,8 @@ void MinimapRenderer::MergeActorGhosts() {
             if (player) {
                 const float dx = pos.x - playerPos.x;
                 const float dy = pos.y - playerPos.y;
-                if (dx * dx + dy * dy > r2) {
+                const bool hostile = ghost.allegiance == ActorMarkerSource::ActorMarker::Allegiance::Hostile;
+                if (dx * dx + dy * dy > (hostile ? hostileR2 : r2)) {
                     ghost.frozen   = true;
                     ghost.lastSeen = now;
                     continue;
@@ -1107,7 +1298,8 @@ void MinimapRenderer::CollectActorsIfDue(const NavigationFrame& a_frame) {
 
     if (a_frame.isExterior) {
         _lastActorScan = ActorMarkerSource::Collect(
-            player, navSettings->navInspectRadarRangeUnits, a_frame.playerPos);
+            player, std::max(navSettings->navActorProximityUnits, navSettings->navHostileRangeUnits()),
+            a_frame.playerPos);
     } else if (auto* cell = player->GetParentCell()) {
         _lastActorScan = ActorMarkerSource::Collect(cell, a_frame.playerPos);
     } else {
@@ -1150,7 +1342,7 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
     float cardinalFontSize = 0.0f;
     float cardinalHalfDiag = 0.0f;
     float cardinalRing = 0.0f;
-    const float cardinalGap = UIScale::Px(3.0f);
+    const float cardinalGap = UIScale::Px(3.0f + static_cast<float>(settings->navGlanceCardinalOffset));
     if (settings->navGlanceShowCardinals) {
         // Static: Get() returns by value and the draw needs stable c_str()s.
         static std::string labels[4];
@@ -1182,7 +1374,7 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
 
 
     const float kGlanceSquareRounding = UIScale::Px(10.0f);
-    const float kGlanceRimMarkerInset = UIScale::Px(8.0f);
+    const float kGlanceRimMarkerInset = UIScale::Px(8.0f - static_cast<float>(settings->navGlanceRimIconOffset));
     const float halfSize = kGlanceRadius;
     const bool square = settings->navGlanceShape == 1;
     const bool followCamera = settings->navGlanceOrientation == 1;
@@ -1454,16 +1646,211 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
 
             ImVec2 rp = WorldToGlance(ghost.position, f.playerPos, glanceScale, glanceRotation);
             const ImVec2 projected(center.x + rp.x, center.y + rp.y);
-            if (!boundary.Contains(projected, actorExtent)) continue;  // off-radar: don't draw
             ImVec2 g = projected;
+            if (!boundary.Contains(projected, actorExtent)) {
+                if (Al::Hostile != ghost.allegiance || !s->navActorHostilesOnRim) continue;
+                g = boundary.ClampFromCenter(projected, actorExtent);
+            }
 
             const ImU32 col = Al::Ally == ghost.allegiance ? MapTheme::kActorAlly
-                             : Al::Hostile == ghost.allegiance ? MapTheme::kActorHostile
+                             : Al::Hostile == ghost.allegiance ? (ghost.engaged ? MapTheme::kActorHostile : MapTheme::kActorHostileIdle)
                              : Al::Animal == ghost.allegiance ? MapTheme::kActorAnimal
                              : MapTheme::kActorNeutral;
             // ghost.alpha carries fade-in AND fade-out (merge fade machine).
             MapDraw::DrawDotFx(dl, g, actorDotRadius, FadeCol(col, a_alpha * ghost.alpha));
         }
+    }
+    auto* directQuestSrv = TextureManager::GetIconByName("activemarker");
+    auto* doorQuestSrv = TextureManager::GetIconByName("active");
+    const auto questSrvFor = [&](bool a_isDoor) {
+        return a_isDoor ? doorQuestSrv : (directQuestSrv ? directQuestSrv : doorQuestSrv);
+    };
+    const int maxQuest = settings->navMaxQuestMarkers;
+    std::vector<QuestDrawCandidate> questCandidates;
+    if (maxQuest > 0 && (directQuestSrv || doorQuestSrv)) {
+        questCandidates.reserve(f.questTargets.size());
+        for (std::size_t i = 0; i < f.questTargets.size(); ++i) {
+            const auto& quest = f.questTargets[i];
+            if (!questSrvFor(quest.isDoor)) continue;
+            const ImVec2 rp = WorldToGlance(quest.position, f.playerPos, glanceScale, glanceRotation);
+            const ImVec2 projected(center.x + rp.x, center.y + rp.y);
+            const bool inView = boundary.Contains(projected);
+            const ImVec2 drawPos = inView
+                ? projected
+                : boundary.ClampFromCenter(projected, kGlanceRimMarkerInset);
+            const float dx = quest.position.x - f.playerPos.x;
+            const float dy = quest.position.y - f.playerPos.y;
+            questCandidates.push_back({ &quest, drawPos, dx * dx + dy * dy, i, inView });
+        }
+        std::sort(questCandidates.begin(), questCandidates.end());
+        if (questCandidates.size() > static_cast<std::size_t>(maxQuest)) {
+            questCandidates.erase(questCandidates.begin() + maxQuest, questCandidates.end());
+        }
+    }
+
+    static RimFocusAnim s_rimFocus;
+    static RadarLabel s_radarLabel;
+    const float labelDt = ImGui::GetIO().DeltaTime;
+    RE::FormID labelId = 0;
+    std::string labelName = f.locationName;
+    std::string labelText = f.locationName;
+    std::string labelSubtitle;
+    std::string focusDistance;
+    ID3D11ShaderResourceView* labelIcon = nullptr;
+    bool labelDimmed = false;
+
+    const auto rim = (f.isExterior && settings->navRimMarkersEnabled) ? RimMarkerSource::Get() : nullptr;
+    const bool rimValid = rim && rim->worldSpaceID == f.worldSpaceID;
+    const bool rimHidden = settings->navRimMarkersHideInCombat && _rimCombatFade < 1.0f;
+    static const std::vector<RimMarkerSource::Entry> kNoRimEntries;
+
+    RimMarkerSource::Entry destination;
+    std::vector<RimMarkerSource::Entry> questEntries;
+    std::vector<const RimMarkerSource::Entry*> priorityEntries;
+    const RimMarkerSource::Entry* look = nullptr;
+    if (settings->navGlanceShowLocation) {
+        std::shared_ptr<const std::vector<ActiveQuestRow>> radarRows;
+        if (maxQuest > 0 && !f.questTargets.empty()) {
+            QuestTracker::GetSingleton()->RequestRadarRefresh();
+            radarRows = QuestTracker::GetSingleton()->GetRadarRows();
+        }
+        const auto matchRows = [&](RE::FormID a_refID, const ActiveQuestRow*& a_first) {
+            int matches = 0;
+            a_first = nullptr;
+            if (!radarRows || a_refID == 0) return matches;
+            for (const auto& row : *radarRows) {
+                if (std::ranges::find(row.compassRefIDs, a_refID) == row.compassRefIDs.end()) continue;
+                if (!a_first) a_first = &row;
+                ++matches;
+            }
+            return matches;
+        };
+
+        if (settings->questRowLog && radarRows) {
+            static std::unordered_map<RE::FormID, int> lastMatches;
+            if (lastMatches.size() > 256) lastMatches.clear();
+            for (const auto& marker : f.questTargets) {
+                const ActiveQuestRow* first = nullptr;
+                const int matches = matchRows(marker.refID, first);
+                const auto it = lastMatches.find(marker.refID);
+                if (it == lastMatches.end() || it->second != matches) {
+                    lastMatches[marker.refID] = matches;
+                    logger::info("[QuestLabel] marker ref={:08X} door={} matches={}",
+                                 marker.refID, marker.isDoor, matches);
+                }
+            }
+        }
+
+        auto* playerWorld = f.isExterior ? RE::TESForm::LookupByID<RE::TESWorldSpace>(f.worldSpaceID) : nullptr;
+        const bool hasDestination = std::ranges::any_of(f.markers, [&](const MapMarker& m) {
+            const bool sameSpace = f.isExterior ? CompassHook::WorldMatches(playerWorld, m.worldSpaceID)
+                                                : (m.worldSpaceID == 0 && m.cellID == f.cellID);
+            if (!m.isDestination || !sameSpace) return false;
+            destination.position = m.position;
+            destination.formID = kDestinationFocusId;
+            destination.name = ResolveMarkerName(m);
+            destination.priority = true;
+            return true;
+        });
+
+        if (radarRows) {
+            questEntries.reserve(questCandidates.size());
+            for (const auto& c : questCandidates) {
+                const ActiveQuestRow* first = nullptr;
+                const int matches = matchRows(c.marker->refID, first);
+                if (!first) continue;
+                std::string text = TruncateUtf8(first->name.empty() ? first->objectiveText : first->name, 48);
+                if (text.empty()) continue;
+                if (matches > 1) text += std::format(" +{}", matches - 1);
+                RimMarkerSource::Entry e;
+                e.position = c.marker->position;
+                e.formID = c.marker->refID;
+                e.name = std::move(text);
+                if (!first->name.empty()) e.subtitle = TruncateUtf8(first->objectiveText, 48);
+                e.priority = true;
+                e.questIcon = c.marker->isDoor ? 2 : 1;
+                questEntries.push_back(std::move(e));
+            }
+        }
+        if (hasDestination) priorityEntries.push_back(&destination);
+        for (const auto& e : questEntries) priorityEntries.push_back(&e);
+
+        look = PickLookAtMarker(rimValid && !rimHidden ? rim->entries : kNoRimEntries, priorityEntries,
+                                f.playerPos, f.cameraAngle, settings->navRimMarkerRange);
+    }
+    if (look) {
+        labelId = look->formID;
+        labelName = look->undiscovered ? LocalizationManager::Get("Navigation.Undiscovered") : look->name;
+        labelIcon = !settings->navGlanceLabelShowIcon ? nullptr
+            : look->questIcon ? questSrvFor(look->questIcon == 2)
+            : look == &destination ? TextureManager::GetIconByName("destination")
+                                   : RimMarkerIcon(*look);
+        labelDimmed = look->dimmed;
+        labelSubtitle = look->subtitle;
+        constexpr float kMinDistanceUnits = 350.0f;
+        const float dist = std::hypot(look->position.x - f.playerPos.x, look->position.y - f.playerPos.y);
+        if (settings->navGlanceLabelShowDistance && dist >= kMinDistanceUnits) {
+            focusDistance = HoverImageRenderer::FormatMarkerDistance(dist, settings->navGlanceLabelDistanceUnits);
+        }
+        labelText = focusDistance.empty() || followCamera
+            ? labelName
+            : std::format("{}, {}", labelName, focusDistance);
+    }
+    bool enemyLabel = false;
+    if (settings->navGlanceShowLocation && settings->navGlanceLabelCombatEnemy &&
+        settings->navActorShowHostile &&
+        static_cast<float>(ImGui::GetTime()) - _lastCombatTime < 1.5f) {
+        if (const auto* enemy = PickLookAtEnemy(_actorGhosts, f.playerPos, f.cameraAngle)) {
+            enemyLabel = true;
+            labelId = 0xFFFFFFFEu;
+            labelName = std::format("{}, {} {}", enemy->name, LocalizationManager::Get("Navigation.LevelAbbrev"), enemy->level);
+            labelText = labelName;
+            labelIcon = nullptr;
+            labelSubtitle.clear();
+            focusDistance.clear();
+            labelDimmed = false;
+            look = nullptr;
+        }
+    }
+    if (settings->rimMarkerLog && labelId != s_rimFocus.current) {
+        logger::info("RimMarkers: focus {:08X} '{}'", labelId, look ? look->name : (enemyLabel ? labelName : ""));
+    }
+    s_rimFocus.Update(labelId, labelDt);
+
+    if (rimValid) {
+        constexpr float kRimUndiscoveredAlpha = 0.5f;
+        constexpr float kRimRangeFadeBand = 0.1f;
+        const float pinDiameter = UIScale::Px(static_cast<float>(settings->navGlancePinSize));
+        const float pinScale = pinDiameter / (2.0f * MapDraw::kPinRadius);
+        const float range = settings->navRimMarkerRange;
+        const auto* rimLook = look && !look->priority ? look : nullptr;
+
+        const auto drawRimMarker = [&](const RimMarkerSource::Entry& e) {
+            const float dist = std::hypot(e.position.x - f.playerPos.x, e.position.y - f.playerPos.y);
+            const float edge = std::clamp((range - dist) / (range * kRimRangeFadeBand), 0.0f, 1.0f);
+            const float focusT = s_rimFocus.For(e.formID);
+            const float dim = e.dimmed ? kRimUndiscoveredAlpha + (1.0f - kRimUndiscoveredAlpha) * focusT : 1.0f;
+            const float alpha = a_alpha * edge * dim * _rimCombatFade;
+            if (alpha <= 0.0f) return;
+            const ImVec2 rp = WorldToGlance(e.position, f.playerPos, glanceScale, glanceRotation);
+            const ImVec2 projected(center.x + rp.x, center.y + rp.y);
+            const ImVec2 drawPos = boundary.Contains(projected)
+                ? projected
+                : boundary.ClampFromCenter(projected, kGlanceRimMarkerInset);
+            auto* icon = RimMarkerIcon(e);
+            if (!icon && !e.logLabel.empty()) {
+                static std::unordered_set<RE::FormID> logged;
+                if (logged.insert(e.formID).second) {
+                    logger::info("RimMarkers: no icon {} packPath='{}'", e.logLabel, e.packPath);
+                }
+            }
+            MapDraw::DrawPin(dl, drawPos.x, drawPos.y, focusT, 1u, icon, pinScale,
+                             IM_COL32(255, 255, 255, 0), alpha, UIScale::Master());
+        };
+        for (const auto& e : rim->entries) {
+            if (!rimLook || e.formID != rimLook->formID) drawRimMarker(e);
+        }
+        if (rimLook) drawRimMarker(*rimLook);
     }
 
     for (const MapMarker* mp : CollectVisibleMarkers(f.markers, f.isExterior,
@@ -1483,7 +1870,8 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
             : boundary.ClampFromCenter(projected, kGlanceRimMarkerInset);
 
         AutomationTelemetry::RadarMarker(m.id, m.position, projected, drawPos);
-        MapDraw::DrawPin(dl, drawPos.x, drawPos.y, 0.0f, drawIconType, pinSrv,
+        const float focusT = m.isDestination && labelId == kDestinationFocusId ? s_rimFocus.For(labelId) : 0.0f;
+        MapDraw::DrawPin(dl, drawPos.x, drawPos.y, focusT, drawIconType, pinSrv,
                          pinScale, Settings::GetSingleton()->PinTintCol(), a_alpha, UIScale::Master());
         if (m.isDestination) {
             const float timeSec = std::chrono::duration<float>(
@@ -1494,36 +1882,16 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
 
     // The engine frame distinguishes direct targets from retargeted load doors.
     // Same WorldToGlance + edge-clamp as custom markers.
-    auto* directQuestSrv = TextureManager::GetIconByName("activemarker");
-    auto* doorQuestSrv = TextureManager::GetIconByName("active");
-    if (directQuestSrv || doorQuestSrv) {
+    if (!questCandidates.empty()) {
         const float questHalf = UIScale::Px(20.0f * settings->navGlancePinSize / (2.0f * MapDraw::kPinRadius));
         // On-radar targets take the limited slots before rim-clamped targets.
         // Within each group, the nearest targets win; ties keep compass order.
-        const int maxQuest = settings->navMaxQuestMarkers;
-        std::vector<QuestDrawCandidate> candidates;
-        if (maxQuest > 0) candidates.reserve(f.questTargets.size());
-        for (std::size_t i = 0; maxQuest > 0 && i < f.questTargets.size(); ++i) {
-            const auto& quest = f.questTargets[i];
-            auto* questSrv = quest.isDoor ? doorQuestSrv : (directQuestSrv ? directQuestSrv : doorQuestSrv);
-            if (!questSrv) continue;
-            const ImVec2 rp = WorldToGlance(quest.position, f.playerPos, glanceScale, glanceRotation);
-            const ImVec2 projected(center.x + rp.x, center.y + rp.y);
-            const bool inView = boundary.Contains(projected);
-            const ImVec2 drawPos = inView
-                ? projected
-                : boundary.ClampFromCenter(projected, kGlanceRimMarkerInset);
-            const float dx = quest.position.x - f.playerPos.x;
-            const float dy = quest.position.y - f.playerPos.y;
-            candidates.push_back({ &quest, drawPos, dx * dx + dy * dy, i, inView });
-        }
-        std::sort(candidates.begin(), candidates.end());
-        const auto drawCount = (std::min)(candidates.size(), static_cast<std::size_t>(maxQuest));
-        for (std::size_t i = drawCount; i > 0; --i) {
-            const auto& candidate = candidates[i - 1];
-            auto* questSrv = candidate.marker->isDoor ? doorQuestSrv
-                : (directQuestSrv ? directQuestSrv : doorQuestSrv);
-            DrawQuestTargetIcon(dl, questSrv, candidate.screenPos.x, candidate.screenPos.y, questHalf, a_alpha);
+        for (std::size_t i = questCandidates.size(); i > 0; --i) {
+            const auto& candidate = questCandidates[i - 1];
+            const RE::FormID refID = candidate.marker->refID;
+            const float questFocusT = labelId != 0 && labelId == refID ? s_rimFocus.For(refID) : 0.0f;
+            DrawQuestTargetIcon(dl, questSrvFor(candidate.marker->isDoor), candidate.screenPos.x,
+                                candidate.screenPos.y, questHalf * (1.0f + 0.3f * questFocusT), a_alpha);
         }
     }
 
@@ -1578,23 +1946,73 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
         }
     }
 
-    if (settings->navGlanceShowLocation && !f.locationName.empty()) {
+    if (settings->navGlanceShowLocation) {
+        s_radarLabel.Update(labelId, labelName, std::move(labelText), std::move(labelSubtitle), labelIcon, labelDimmed, labelDt);
+    }
+    if (followCamera && look && !focusDistance.empty()) {
+        ImFont* distFont = FontManager::GetSingleton()->GetHeadingFont();
+        if (!distFont) distFont = ImGui::GetFont();
+        const float distSize = distFont->FontSize * UIScale::Font() *
+            std::clamp(settings->navGlanceLabelScale, 0.5f, 3.0f) * 0.85f;
+        const ImVec2 dsz = distFont->CalcTextSizeA(distSize, FLT_MAX, 0.0f, focusDistance.c_str());
+        const ImVec2 rp = WorldToGlance(look->position, f.playerPos, glanceScale, glanceRotation);
+        const ImVec2 projected(center.x + rp.x, center.y + rp.y);
+        const ImVec2 iconPos = boundary.Contains(projected)
+            ? projected
+            : boundary.ClampFromCenter(projected, kGlanceRimMarkerInset);
+        const float iconHalf = 1.3f * UIScale::Px(20.0f * settings->navGlancePinSize / (2.0f * MapDraw::kPinRadius));
+        const float dx = std::clamp(iconPos.x - dsz.x * 0.5f, 0.0f, (std::max)(0.0f, disp.x - dsz.x));
+        const float dy = (std::max)(0.0f, iconPos.y - iconHalf - dsz.y);
+        const float distAlpha = a_alpha * s_rimFocus.For(labelId);
+        dl->AddText(distFont, distSize, ImVec2(dx + UIScale::Px(1.0f), dy + UIScale::Px(1.0f)),
+                    FadeCol(IM_COL32(0, 0, 0, 200), distAlpha), focusDistance.c_str());
+        dl->AddText(distFont, distSize, ImVec2(dx, dy),
+                    FadeCol(MapTheme::kHeaderText, distAlpha), focusDistance.c_str());
+    }
+
+    if (settings->navGlanceShowLocation && !s_radarLabel.text.empty()) {
         ImFont* titleFont = FontManager::GetSingleton()->GetHeadingFont();
         if (!titleFont) titleFont = ImGui::GetFont();
         const float titleSize = titleFont->FontSize * UIScale::Font() *
-            std::clamp(settings->titleScale, 0.5f, 3.0f);
-        const char* title = f.locationName.c_str();
+            std::clamp(settings->navGlanceLabelScale, 0.5f, 3.0f);
+        const char* title = s_radarLabel.text.c_str();
         const ImVec2 tsz = titleFont->CalcTextSizeA(titleSize, FLT_MAX, 0.0f, title);
         const float gap = UIScale::Px(4.0f);
-        float ty = center.y + halfSize + cardinalRing + gap;
-        if (ty + tsz.y > disp.y) {
-            ty = center.y - halfSize - cardinalRing - gap - tsz.y;
+        const float labelRing = settings->navGlanceShowCardinals
+            ? cardinalRing + UIScale::Px(static_cast<float>((std::max)(0, -settings->navGlanceCardinalOffset)))
+            : 0.0f;
+        const char* subtitle = s_radarLabel.subtitle.c_str();
+        const float subtitleSize = titleSize * 0.85f;
+        const ImVec2 ssz = s_radarLabel.subtitle.empty()
+            ? ImVec2(0.0f, 0.0f)
+            : titleFont->CalcTextSizeA(subtitleSize, FLT_MAX, 0.0f, subtitle);
+        float ty = center.y + halfSize + labelRing + gap;
+        if (ty + tsz.y + ssz.y > disp.y) {
+            ty = center.y - halfSize - labelRing - gap - tsz.y - ssz.y;
         }
-        const float tx = std::clamp(center.x - tsz.x * 0.5f, 0.0f, (std::max)(0.0f, disp.x - tsz.x));
+        const float labelAlpha = a_alpha * s_radarLabel.alpha;
+        const float iconSize = s_radarLabel.icon ? tsz.y : 0.0f;
+        const float iconGap = s_radarLabel.icon ? UIScale::Px(5.0f) : 0.0f;
+        const float totalW = iconSize + iconGap + tsz.x;
+        const float left = std::clamp(center.x - totalW * 0.5f, 0.0f, (std::max)(0.0f, disp.x - totalW));
+        const float tx = left + iconSize + iconGap;
+        if (s_radarLabel.icon) {
+            MapDraw::DrawPin(dl, left + iconSize * 0.5f, ty + tsz.y * 0.5f, 0.0f, 1u, s_radarLabel.icon,
+                             iconSize / 32.0f, IM_COL32(255, 255, 255, 0),
+                             labelAlpha * (s_radarLabel.dimmed ? 0.5f : 1.0f), UIScale::Master());
+        }
         dl->AddText(titleFont, titleSize, ImVec2(tx + UIScale::Px(1.0f), ty + UIScale::Px(1.0f)),
-                    FadeCol(IM_COL32(0, 0, 0, 200), a_alpha), title);
+                    FadeCol(IM_COL32(0, 0, 0, 200), labelAlpha), title);
         dl->AddText(titleFont, titleSize, ImVec2(tx, ty),
-                    FadeCol(MapTheme::kHeaderText, a_alpha), title);
+                    FadeCol(MapTheme::kHeaderText, labelAlpha), title);
+        if (!s_radarLabel.subtitle.empty()) {
+            const float sx = std::clamp(center.x - ssz.x * 0.5f, 0.0f, (std::max)(0.0f, disp.x - ssz.x));
+            const float sy = ty + tsz.y;
+            dl->AddText(titleFont, subtitleSize, ImVec2(sx + UIScale::Px(1.0f), sy + UIScale::Px(1.0f)),
+                        FadeCol(IM_COL32(0, 0, 0, 200), labelAlpha), subtitle);
+            dl->AddText(titleFont, subtitleSize, ImVec2(sx, sy),
+                        FadeCol(MapTheme::kBodyText, labelAlpha), subtitle);
+        }
     }
 }
 
@@ -1774,7 +2192,7 @@ void MinimapRenderer::DrawInspect(const NavigationFrame& f, float a_alpha) {
                 if (!ProjectWithSnapshot(snap, ghost.position, vMin, vSize, g)) continue;
 
                 const ImU32 col = Al::Ally == ghost.allegiance ? MapTheme::kActorAlly
-                                 : Al::Hostile == ghost.allegiance ? MapTheme::kActorHostile
+                                 : Al::Hostile == ghost.allegiance ? (ghost.engaged ? MapTheme::kActorHostile : MapTheme::kActorHostileIdle)
                                  : Al::Animal == ghost.allegiance ? MapTheme::kActorAnimal
                                  : MapTheme::kActorNeutral;
                 // ghost.alpha carries fade-in AND fade-out (merge fade machine).
@@ -1816,7 +2234,7 @@ void MinimapRenderer::DrawInspect(const NavigationFrame& f, float a_alpha) {
             if (ProjectWithSnapshot(snap, projPos, vMin, vSize, mScreen)) {
                 const std::uint32_t drawIconType = m.isDestination ? 0u : m.iconType;
                 auto* pinSrv = m.isDestination ? TextureManager::GetIconByName("destination")
-                                               : TextureManager::GetCategoryIcon(m.iconType);
+                                               : TextureManager::GetCategoryIcon(m.iconType, true);
                 const float pinDiameter = UIScale::Px(static_cast<float>(Settings::GetSingleton()->navInspectPinSize));
                 const float pinScale = pinDiameter / (2.0f * MapDraw::kPinRadius);
                 // Shared pin tint, same reasoning as the Glance loop above.

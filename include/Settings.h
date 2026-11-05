@@ -82,6 +82,7 @@ public:
     std::int32_t statCardAnchor  = 3;
     std::int32_t statCardOffsetX = 20;
     std::int32_t statCardOffsetY = 0;
+    std::int32_t markerHoverRange = 30;
 
     // Controls the Type, Hold, Bounty, and Cleared rows on vanilla marker hovers.
     // The marker name, note, and image remain independent.
@@ -136,8 +137,15 @@ public:
     int navGlanceOrientation = 0;  // 0 = Fixed North, 1 = Follow Camera
     // N/E/S/W drawn just outside the rim; they follow the same rotation as the glyphs.
     bool navGlanceShowCardinals = true;
+    int navGlanceCardinalOffset = 0;
+    int navGlanceRimIconOffset = 0;
     // Location name under the radar, same source and style as the Inspect title.
     bool navGlanceShowLocation = true;
+    float navGlanceLabelScale = 1.0f;
+    bool navGlanceLabelShowDistance = true;
+    bool navGlanceLabelShowIcon = true;
+    bool navGlanceLabelCombatEnemy = true;
+    std::int32_t navGlanceLabelDistanceUnits = 0;
     int navInspectSizePct = 72;
     bool navRefreshOnInspect = true;
 
@@ -350,9 +358,19 @@ public:
     std::int32_t navGlanceActorDotSize  = 5;
     std::int32_t navInspectActorDotSize = 6;
     float navActorProximityUnits = 1200.0f;
+    bool navActorHostilesOnRim = true;
+    float navActorHostileRangeUnits = 3000.0f;
     float navMarkerRange = 98000.0f;  // 1400 m * 70
     std::int32_t navMaxQuestMarkers = 2;
     std::int32_t navMaxCustomMarkers = 5;
+    bool navRimMarkersEnabled = false;
+    bool navRimMarkersHideInCombat = true;
+    bool navHideCompass = false;
+    bool navHideCNOQuestList = false;
+    float navRimMarkerRange = 21000.0f;
+    std::int32_t navMaxRimMarkers = 12;
+    bool navRimShowUndiscovered = true;
+    bool navRimMode[11] = { true, true, true, true, true, true, true, true, false, false, true };
 
     bool         navBeaconVisible = true;
     // FAR height. The beam scales down toward navBeaconNearScale as the player
@@ -370,6 +388,7 @@ public:
     bool         cursorVerboseLog = false;
 
     bool         hudMarkerLog = false;
+    bool         rimMarkerLog = false;
 
     bool         beaconVerboseLog = false;
     bool         lootBeamPerfLog = false;
@@ -443,6 +462,9 @@ public:
 
     bool navActorAnyVisible() const {
         return navActorShowAlly || navActorShowHostile || navActorShowNeutral || navActorShowAnimal;
+    }
+    float navHostileRangeUnits() const {
+        return navActorHostilesOnRim ? navActorHostileRangeUnits : navActorProximityUnits;
     }
 
     bool navGlanceShowTrail     = true;

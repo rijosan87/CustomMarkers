@@ -420,6 +420,7 @@ namespace {
                 entry.position = refPtr->GetPosition();
                 entry.questID  = ResolveQuestFromHandle(*a_refHandle);
                 entry.isDoor   = isDoor;
+                entry.refID    = refPtr->GetFormID();
 
                 std::lock_guard lock(g_mutex);
                 g_pending.push_back(entry);

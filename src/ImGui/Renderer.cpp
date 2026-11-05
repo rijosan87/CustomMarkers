@@ -10,6 +10,7 @@
 #include "WorldBeaconRenderer.h"
 #include "LootBeamRenderer.h"
 #include "LookPinRenderer.h"
+#include "CompassVisibility.h"
 #include "MapLookRemapHook.h"
 #include "MapDrawHelpers.h"   // MapDraw::DrawRequestedCursor (frame-end cursor)
 // #include "LocalMapHudSpike.h"
@@ -638,6 +639,7 @@ namespace ImGuiRenderer {
                 HoverImageRenderer::Draw();
                 mapRenderer->EndControllerContextFrame();
                 MinimapRenderer::GetSingleton()->Draw();
+                CompassVisibility::RequestUpdateIfDue();
                 WorldBeaconRenderer::GetSingleton()->Draw();
                 LootBeamRenderer::GetSingleton()->Draw();
                 LookPinRenderer::GetSingleton()->Draw();

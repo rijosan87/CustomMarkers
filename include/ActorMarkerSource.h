@@ -4,6 +4,7 @@
 
 #include <RE/Skyrim.h>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace ActorMarkerSource {
@@ -12,6 +13,9 @@ namespace ActorMarkerSource {
         RE::FormID   formID;
         RE::NiPoint3 position;
         Allegiance   allegiance;
+        bool          engaged = false;
+        std::string   name;
+        std::uint16_t level = 0;
     };
 
     constexpr float kActorProximityRadius = 1000.0f;

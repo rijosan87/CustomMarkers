@@ -5,6 +5,7 @@
 #include "PlaceMarkerHook.h"
 #include "HoverImageRenderer.h"
 #include "MapLookRemapHook.h"
+#include "Settings.h"
 
 #include <RE/Skyrim.h>
 #include <SKSE/SKSE.h>
@@ -12,6 +13,8 @@
 #include <polyhook2/Detour/x64Detour.hpp>
 
 #include <Windows.h>
+#include <atomic>
+#include <cstring>
 #include <memory>
 #include "ImGui/Renderer.h"
 #include <imgui.h>
@@ -56,33 +59,67 @@ namespace {
 
     // Tracks last suppress state so we only log on transitions, not every frame.
     static bool s_lastSuppressState = false;
+    constexpr std::uint64_t kCameraSettleMs = 150;
+    float                   g_lastWorldToCam[4][4]{};
+    std::uint64_t           g_lastCameraMoveTick = 0;
+    std::atomic<bool>       g_cameraMoving{ false };
+
+    RE::MapMenu*            g_hoverPassMenu = nullptr;
+
+    void UpdateCameraMotion(RE::MapMenu* a_menu) {
+        auto root = a_menu->GetRuntimeData2()->camera.cameraRoot;
+        if (!root) return;
+        auto& children = root->GetChildren();
+        if (children.empty() || !children[0]) return;
+        auto* camera = netimmerse_cast<RE::NiCamera*>(children[0].get());
+        if (!camera) return;
+
+        const auto& worldToCam = camera->GetRuntimeData().worldToCam;
+        const std::uint64_t now = GetTickCount64();
+        if (std::memcmp(worldToCam, g_lastWorldToCam, sizeof(g_lastWorldToCam)) != 0) {
+            std::memcpy(g_lastWorldToCam, worldToCam, sizeof(g_lastWorldToCam));
+            g_lastCameraMoveTick = now;
+        }
+
+        const bool moving = now - g_lastCameraMoveTick < kCameraSettleMs;
+        if (moving != g_cameraMoving.exchange(moving) &&
+            Settings::GetSingleton()->cursorVerboseLog) {
+            logger::info("MarkerHoverHook: map camera {}", moving ? "moving, hover off" : "settled, hover on");
+        }
+    }
 
     void HookedFxDelegateInvoke(void* a_movie, const char* a_methodName,
                                 void* a_args, std::uint64_t a_reserved) {
         const bool isOurMethod = (a_methodName == g_setSelectedMarkerLiteral);
 
         if (isOurMethod && a_args) {
-            const bool suppress = CtrlHeld() || MapLookRemapHook::IsTilting()
+            bool suppress = CtrlHeld() || MapLookRemapHook::IsTilting()
+                               || g_cameraMoving.load()
                                || InputHook::IsTextInputActive()
                                || MapMarkerRenderer::GetSingleton()->IsNoteDialogOpen()
                                || MapMarkerRenderer::GetSingleton()->IsCustomPinHovered()
                                || MapMarkerRenderer::GetSingleton()->CursorOverPanel()
                                || (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse);
 
-            if (suppress) {
+
+            if (suppress || g_hoverPassMenu) {
                 auto** vtbl = *reinterpret_cast<void***>(a_args);
                 auto getValues = reinterpret_cast<GetValuesFn>(vtbl[1]);
 
                 GFxValueRaw* values = nullptr;
                 std::uint32_t count = getValues(a_args, &values);
 
-                if (values) {
+                if (!suppress && values && count > 0 && (values[count - 1].type & 0xFF) == 3) {
+                    suppress = !HoverImageRenderer::IsWithinHoverRange(
+                        g_hoverPassMenu, static_cast<std::int32_t>(values[count - 1].numberValue));
+                }
+
+                if (suppress && values) {
                     for (std::uint32_t i = 0; i < count; ++i) {
                         values[i].value       = nullptr;
                         values[i].type        = 3; // kNumber
                         values[i].numberValue = -1.0;
                     }
-                } else {
                 }
             }
         }
@@ -166,15 +203,23 @@ namespace {
     }
 
     void HookedUpdateHoveredMarker(RE::MapMenu* a_menu) {
+        if (a_menu) UpdateCameraMotion(a_menu);
+        g_hoverPassMenu = a_menu;
         reinterpret_cast<UpdateHoveredMarkerFn>(g_trampolineAddr)(a_menu);
+        g_hoverPassMenu = nullptr;
         if (!a_menu) return;
         if (CtrlHeld() || MapLookRemapHook::IsTilting()
+                       || g_cameraMoving.load()
                        || MapMarkerRenderer::GetSingleton()->CursorOverPanel()
                        || InputHook::IsTextInputActive()
                        || MapMarkerRenderer::GetSingleton()->IsNoteDialogOpen()
                        || MapMarkerRenderer::GetSingleton()->IsCustomPinHovered()
                        || (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse)) {
             auto base = reinterpret_cast<std::uintptr_t>(a_menu);
+            *reinterpret_cast<std::int32_t*>(base + kHoveredMarkerOffset) = -1;
+        } else if (auto base = reinterpret_cast<std::uintptr_t>(a_menu);
+                   !HoverImageRenderer::IsWithinHoverRange(
+                       a_menu, *reinterpret_cast<std::int32_t*>(base + kHoveredMarkerOffset))) {
             *reinterpret_cast<std::int32_t*>(base + kHoveredMarkerOffset) = -1;
         }
         HoverImageRenderer::SampleCardState(a_menu);

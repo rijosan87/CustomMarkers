@@ -117,6 +117,7 @@ namespace MapTheme {
 
     constexpr ImU32 kActorAlly     = IM_COL32( 70, 140, 230, 235);  // blue
     constexpr ImU32 kActorHostile  = IM_COL32(220,  60,  55, 235);  // red
+    constexpr ImU32 kActorHostileIdle = IM_COL32(235, 140,  40, 235);
     constexpr ImU32 kActorNeutral  = IM_COL32( 90, 200, 120, 235);  // green; unflagged NPCs (townsfolk, guards not in combat)
     constexpr ImU32 kActorAnimal   = IM_COL32(210, 210, 215, 230);  // grey; non-hostile wildlife (fox/deer). Hostile creatures still red.
                                                                     // 150/160 was near-invisible on the backdrop -- keep it bright.

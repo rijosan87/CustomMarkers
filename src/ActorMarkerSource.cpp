@@ -8,27 +8,34 @@ namespace {
         auto* s = Settings::GetSingleton();
         return s ? s->navActorProximityUnits : ActorMarkerSource::kActorProximityRadius;
     }
+
+    float HostileRadius() {
+        auto* s = Settings::GetSingleton();
+        return s ? s->navHostileRangeUnits() : ActorMarkerSource::kActorProximityRadius;
+    }
 }
 
 namespace ActorMarkerSource {
 namespace {
     constexpr std::size_t kMaxActors = 256;
-    bool IsFightingPlayer(RE::Actor* a_actor, RE::Actor* a_player) {
+    bool IsTargetingPlayerSide(RE::Actor* a_actor, RE::Actor* a_player) {
         if (!a_actor || !a_player) return false;
         if (!a_actor->IsInCombat()) return false;
         const RE::NiPointer<RE::Actor> target =
             a_actor->GetActorRuntimeData().currentCombatTarget.get();
-        return target.get() == a_player;
+        return target && (target.get() == a_player || target->IsPlayerTeammate());
     }
     RE::BSContainer::ForEachResult ClassifyAndAppend(RE::TESObjectREFR& ref,
                                                       RE::Actor* a_player,
                                                       const RE::NiPoint3& a_playerPos,
                                                       float a_radiusSq,
+                                                      float a_hostileRadiusSq,
                                                       std::vector<ActorMarker>& out) {
         if (out.size() >= kMaxActors) return RE::BSContainer::ForEachResult::kStop;
         const float dx = ref.GetPositionX() - a_playerPos.x;
         const float dy = ref.GetPositionY() - a_playerPos.y;
-        if (dx * dx + dy * dy > a_radiusSq)
+        const float distSq = dx * dx + dy * dy;
+        if (distSq > std::max(a_radiusSq, a_hostileRadiusSq))
             return RE::BSContainer::ForEachResult::kContinue;
         auto* actor = ref.As<RE::Actor>();
         if (!actor) return RE::BSContainer::ForEachResult::kContinue;
@@ -38,17 +45,64 @@ namespace {
         if (actor->IsDisabled()) return RE::BSContainer::ForEachResult::kContinue;
         ActorMarker::Allegiance allegiance;
         const bool isAnimal = actor->HasKeywordString("ActorTypeAnimal");
-        const bool fightingPlayer = IsFightingPlayer(actor, a_player);
+        const bool engaged = IsTargetingPlayerSide(actor, a_player);
         if (actor->IsPlayerTeammate()) {
             allegiance = ActorMarker::Allegiance::Ally;
         } else if (isAnimal && !actor->IsInCombat()) {
             allegiance = ActorMarker::Allegiance::Animal;
-        } else if (fightingPlayer || (a_player && actor->IsHostileToActor(a_player))) {
+        } else if (engaged || (a_player && actor->IsHostileToActor(a_player))) {
             allegiance = ActorMarker::Allegiance::Hostile;
         } else {
             allegiance = ActorMarker::Allegiance::Neutral;
         }
-        out.push_back({ actor->GetFormID(), ref.GetPosition(), allegiance });
+
+        if (distSq > (allegiance == ActorMarker::Allegiance::Hostile ? a_hostileRadiusSq : a_radiusSq))
+            return RE::BSContainer::ForEachResult::kContinue;
+
+        if (auto* settings = Settings::GetSingleton(); settings && settings->rimMarkerLog) {
+            struct LoggedState {
+                ActorMarker::Allegiance allegiance;
+                bool engaged;
+                bool searching;
+                RE::FormID target;
+                bool operator==(const LoggedState&) const = default;
+            };
+            static std::unordered_map<RE::FormID, LoggedState> lastLogged;
+            if (lastLogged.size() > 512) lastLogged.clear();
+
+            const auto& runtime = actor->GetActorRuntimeData();
+            const RE::NiPointer<RE::Actor> target = runtime.currentCombatTarget.get();
+            const LoggedState state{ allegiance, engaged,
+                                     runtime.boolBits.any(RE::Actor::BOOL_BITS::kSearchingInCombat),
+                                     target ? target->GetFormID() : 0 };
+            const auto it = lastLogged.find(actor->GetFormID());
+            if (it == lastLogged.end() || !(it->second == state)) {
+                const auto stateName = [](const LoggedState& a_state) {
+                    switch (a_state.allegiance) {
+                    case ActorMarker::Allegiance::Ally:    return "Ally";
+                    case ActorMarker::Allegiance::Animal:  return "Animal";
+                    case ActorMarker::Allegiance::Neutral: return "Neutral";
+                    default: return a_state.engaged ? "Red" : "Orange";
+                    }
+                };
+                const char* name = actor->GetDisplayFullName();
+                const char* targetName = target ? target->GetDisplayFullName() : nullptr;
+                logger::info("[ActorState] {:08X} '{}' {} -> {} inCombat={} searching={} target={:08X} '{}'",
+                             actor->GetFormID(), name ? name : "",
+                             it == lastLogged.end() ? "new" : stateName(it->second), stateName(state),
+                             actor->IsInCombat(), state.searching, state.target, targetName ? targetName : "");
+                lastLogged[actor->GetFormID()] = state;
+            }
+        }
+
+        ActorMarker marker{ actor->GetFormID(), ref.GetPosition(), allegiance };
+        if (allegiance == ActorMarker::Allegiance::Hostile) {
+            marker.engaged = engaged;
+            const char* name = actor->GetDisplayFullName();
+            marker.name = name ? name : "";
+            marker.level = actor->GetLevel();
+        }
+        out.push_back(std::move(marker));
         return RE::BSContainer::ForEachResult::kContinue;
     }
 }
@@ -60,9 +114,11 @@ std::vector<ActorMarker> Collect(RE::TESObjectCELL* a_cell, const RE::NiPoint3& 
     auto* player = RE::PlayerCharacter::GetSingleton();
     const float r = ProximityRadius();
     const float r2 = r * r;
+    const float hostileR = HostileRadius();
+    const float hostileR2 = hostileR * hostileR;
     a_cell->ForEachReference([&](RE::TESObjectREFR* ref) {
         if (!ref) return RE::BSContainer::ForEachResult::kContinue;
-        return ClassifyAndAppend(*ref, player, a_playerPos, r2, out);
+        return ClassifyAndAppend(*ref, player, a_playerPos, r2, hostileR2, out);
     });
     return out;
 }
@@ -74,6 +130,8 @@ std::vector<ActorMarker> Collect(RE::TESObjectREFR* a_origin, float a_radius, co
     auto* player = RE::PlayerCharacter::GetSingleton();
     const float r = ProximityRadius();
     const float r2 = r * r;
+    const float hostileR = HostileRadius();
+    const float hostileR2 = hostileR * hostileR;
     auto* tes = RE::TES::GetSingleton();
     if (!tes) return out;
     const auto originPos = a_origin->GetPosition();
@@ -92,7 +150,7 @@ std::vector<ActorMarker> Collect(RE::TESObjectREFR* a_origin, float a_radius, co
                 cell->ForEachReferenceInRange(originPos, a_radius,
                     [&](RE::TESObjectREFR* ref) {
                         if (!ref) return RE::BSContainer::ForEachResult::kContinue;
-                        return ClassifyAndAppend(*ref, player, a_playerPos, r2, out);
+                        return ClassifyAndAppend(*ref, player, a_playerPos, r2, hostileR2, out);
                     });
             }
         }

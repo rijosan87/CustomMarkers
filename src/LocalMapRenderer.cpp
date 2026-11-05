@@ -484,7 +484,7 @@ void LocalMapRenderer::Draw() {
         if (v.isRingOnly) continue;        // ring already drawn; vanilla owns the icon
         const std::uint32_t drawIconType = v.isDestination ? 0u : v.iconType;
         auto* pinSrv = v.isDestination ? TextureManager::GetIconByName("destination")
-                                       : TextureManager::GetCategoryIcon(v.iconType);
+                                       : TextureManager::GetCategoryIcon(v.iconType, true);
         MapDraw::DrawPin(dl, v.px, v.py, _hoverAnim[v.id], drawIconType, pinSrv,
                          effectivePinScale,
                          Settings::GetSingleton()->PinTintCol(), 1.0f, UIScale::Master());

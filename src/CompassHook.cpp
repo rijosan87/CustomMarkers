@@ -90,6 +90,7 @@ namespace {
     // Alias so the CompassHook:: forwarder below can reach the anonymous-namespace
     // definition without recursing into itself.
     constexpr auto g_worldMatches = &WorldMatches;
+    constexpr auto g_rootWorld = &RootWorld;
 
     RE::TESObjectREFR* FindExitDoorForWorldspace(RE::TESObjectCELL* cell,
                                                  RE::FormID targetWorldspaceID) {
@@ -400,6 +401,14 @@ namespace {
 namespace CompassHook {
     bool WorldMatches(RE::TESWorldSpace* a_current, RE::FormID a_markerWorldID) {
         return g_worldMatches(a_current, a_markerWorldID);
+    }
+
+    RE::TESWorldSpace* RootWorld(RE::TESWorldSpace* a_world) {
+        return g_rootWorld(a_world);
+    }
+
+    float SquaredLocationRadius() {
+        return *reinterpret_cast<const float*>(REL::Relocation<std::uintptr_t>{ kCompassBufferID }.address() + 0x14B8);
     }
 
     void Install() {

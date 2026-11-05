@@ -1,5 +1,6 @@
 #include "Settings.h"
 #include "InputHandler.h"  // FormatHotkeyWithModifier for the load-time log line
+#include "MarkerFilterHook.h"
 
 #include <SimpleIni.h>
 #include <REL/Module.h>
@@ -8,6 +9,8 @@
 #include <cstdio>    // std::snprintf
 #include <cstdlib>   // std::strtoul
 #include <filesystem>
+#include <iterator>
+#include <string>
 #include <system_error>
 
 namespace fs = std::filesystem;
@@ -180,6 +183,7 @@ void Settings::Load() {
     statCardAnchor = std::clamp(static_cast<std::int32_t>(ini.GetLongValue("StatCard", "Anchor", statCardAnchor)), 0, 3);
     statCardOffsetX = static_cast<std::int32_t>(ini.GetLongValue("StatCard", "OffsetX", statCardOffsetX));
     statCardOffsetY = static_cast<std::int32_t>(ini.GetLongValue("StatCard", "OffsetY", statCardOffsetY));
+    markerHoverRange = std::clamp(static_cast<std::int32_t>(ini.GetLongValue("StatCard", "HoverRange", markerHoverRange)), 0, 150);
     statCardShowDetails = (ini.GetLongValue("StatCard", "ShowDetails", statCardShowDetails ? 1L : 0L) != 0);
     statCardShowType = (ini.GetLongValue("StatCard", "ShowType", statCardShowType ? 1L : 0L) != 0);
     statCardShowHold = (ini.GetLongValue("StatCard", "ShowHold", statCardShowHold ? 1L : 0L) != 0);
@@ -214,7 +218,14 @@ void Settings::Load() {
     navGlanceShape = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlanceShape", navGlanceShape)), 0, 1);
     navGlanceOrientation = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlanceOrientation", navGlanceOrientation)), 0, 1);
     navGlanceShowCardinals = (ini.GetLongValue("NavigationOverlay", "GlanceShowCardinals", navGlanceShowCardinals ? 1L : 0L) != 0);
+    navGlanceCardinalOffset = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlanceCardinalOffset", navGlanceCardinalOffset)), -20, 40);
+    navGlanceRimIconOffset = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlanceRimIconOffset", navGlanceRimIconOffset)), -20, 40);
     navGlanceShowLocation = (ini.GetLongValue("NavigationOverlay", "GlanceShowLocation", navGlanceShowLocation ? 1L : 0L) != 0);
+    navGlanceLabelScale = std::clamp(static_cast<float>(ini.GetDoubleValue("NavigationOverlay", "GlanceLabelScale", navGlanceLabelScale)), 0.5f, 3.0f);
+    navGlanceLabelShowDistance = (ini.GetLongValue("NavigationOverlay", "GlanceLabelShowDistance", navGlanceLabelShowDistance ? 1L : 0L) != 0);
+    navGlanceLabelCombatEnemy = (ini.GetLongValue("NavigationOverlay", "GlanceLabelCombatEnemy", navGlanceLabelCombatEnemy ? 1L : 0L) != 0);
+    navGlanceLabelShowIcon = (ini.GetLongValue("NavigationOverlay", "GlanceLabelShowIcon", navGlanceLabelShowIcon ? 1L : 0L) != 0);
+    navGlanceLabelDistanceUnits = std::clamp(static_cast<std::int32_t>(ini.GetLongValue("NavigationOverlay", "GlanceLabelDistanceUnits", navGlanceLabelDistanceUnits)), 0, 1);
     navInspectSizePct = static_cast<int>(ini.GetLongValue("NavigationOverlay", "InspectSizePct", navInspectSizePct));
     navRefreshOnInspect = (ini.GetLongValue("NavigationOverlay", "RefreshOnInspect", navRefreshOnInspect ? 1L : 0L) != 0);
 
@@ -326,6 +337,8 @@ void Settings::Load() {
     navGlanceActorDotSize = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlanceActorDotSize", navGlanceActorDotSize)), 2, 16);
     navInspectActorDotSize = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "InspectActorDotSize", navInspectActorDotSize)), 3, 24);
     navActorProximityUnits = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "ActorProximityUnits", static_cast<long>(navActorProximityUnits))), 200.0f, 4000.0f);
+    navActorHostilesOnRim = (ini.GetLongValue("NavigationOverlay", "ActorHostilesOnRim", navActorHostilesOnRim ? 1L : 0L) != 0);
+    navActorHostileRangeUnits = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "ActorHostileRangeUnits", static_cast<long>(navActorHostileRangeUnits))), 200.0f, 8000.0f);
 
     // MarkerRange is stored in the INI in METERS; navMarkerRange holds units.
     {
@@ -335,6 +348,22 @@ void Settings::Load() {
     }
     navMaxQuestMarkers = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "MaxQuestMarkers", navMaxQuestMarkers)), 0, 10);
     navMaxCustomMarkers = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "MaxCustomMarkers", navMaxCustomMarkers)), 0, 30);
+
+    navRimMarkersEnabled = (ini.GetLongValue("NavigationOverlay", "RimMarkers", navRimMarkersEnabled ? 1L : 0L) != 0);
+    navRimMarkersHideInCombat = (ini.GetLongValue("NavigationOverlay", "RimMarkersHideInCombat", navRimMarkersHideInCombat ? 1L : 0L) != 0);
+    navHideCompass = (ini.GetLongValue("NavigationOverlay", "HideCompass", navHideCompass ? 1L : 0L) != 0);
+    navHideCNOQuestList = (ini.GetLongValue("NavigationOverlay", "HideCNOQuestList", navHideCNOQuestList ? 1L : 0L) != 0);
+    {
+        const long defM = static_cast<long>(navRimMarkerRange / Settings::kUnitsPerMeter);
+        const float meters = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "RimMarkerRange", defM)), 50.0f, 2000.0f);
+        navRimMarkerRange = meters * Settings::kUnitsPerMeter;
+    }
+    navMaxRimMarkers = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "MaxRimMarkers", navMaxRimMarkers)), 1, 30);
+    navRimShowUndiscovered = (ini.GetLongValue("NavigationOverlay", "RimShowUndiscovered", navRimShowUndiscovered ? 1L : 0L) != 0);
+    for (std::size_t i = 0; i < std::size(navRimMode); ++i) {
+        const std::string key = std::string("RimShow") + MarkerFilterHook::GetModeName(static_cast<MarkerFilterHook::FocusMode>(i));
+        navRimMode[i] = (ini.GetLongValue("NavigationOverlay", key.c_str(), navRimMode[i] ? 1L : 0L) != 0);
+    }
 
     navBeaconVisible = (ini.GetLongValue("NavigationOverlay", "BeaconVisible", navBeaconVisible ? 1L : 0L) != 0);
     navBeaconPillarHeight = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "BeaconPillarHeight", static_cast<long>(navBeaconPillarHeight))), 50.0f, 2000.0f);
@@ -404,6 +433,7 @@ void Settings::Load() {
     inputVerboseLog = (ini.GetLongValue("Logging", "InputVerboseLog", inputVerboseLog ? 1L : 0L) != 0);
     cursorVerboseLog = (ini.GetLongValue("Logging", "CursorVerboseLog", cursorVerboseLog ? 1L : 0L) != 0);
     hudMarkerLog = (ini.GetLongValue("Logging", "HUDMarkerLog", hudMarkerLog ? 1L : 0L) != 0);
+    rimMarkerLog = (ini.GetLongValue("Logging", "RimMarkerLog", rimMarkerLog ? 1L : 0L) != 0);
     beaconVerboseLog = (ini.GetLongValue("Logging", "BeaconVerboseLog", beaconVerboseLog ? 1L : 0L) != 0);
     lootBeamPerfLog = (ini.GetLongValue("Logging", "LootBeamPerfLog", lootBeamPerfLog ? 1L : 0L) != 0);
 
@@ -489,6 +519,7 @@ void Settings::Save() {
     ini.SetLongValue("Logging", "InputVerboseLog", inputVerboseLog ? 1L : 0L);
     ini.SetLongValue("Logging", "CursorVerboseLog", cursorVerboseLog ? 1L : 0L);
     ini.SetLongValue("Logging", "HUDMarkerLog", hudMarkerLog ? 1L : 0L);
+    ini.SetLongValue("Logging", "RimMarkerLog", rimMarkerLog ? 1L : 0L);
     ini.SetLongValue("Logging", "BeaconVerboseLog", beaconVerboseLog ? 1L : 0L);
     ini.SetLongValue("Logging", "LootBeamPerfLog", lootBeamPerfLog ? 1L : 0L);
     ini.SetLongValue("Logging", "QuestRowLog", questRowLog ? 1L : 0L);
@@ -529,6 +560,7 @@ void Settings::Save() {
     ini.SetLongValue("StatCard", "Anchor", statCardAnchor);
     ini.SetLongValue("StatCard", "OffsetX", statCardOffsetX);
     ini.SetLongValue("StatCard", "OffsetY", statCardOffsetY);
+    ini.SetLongValue("StatCard", "HoverRange", markerHoverRange);
     ini.SetLongValue("StatCard", "ShowDetails", statCardShowDetails ? 1L : 0L);
     ini.SetLongValue("StatCard", "ShowType", statCardShowType ? 1L : 0L);
     ini.SetLongValue("StatCard", "ShowHold", statCardShowHold ? 1L : 0L);
@@ -556,7 +588,14 @@ void Settings::Save() {
     ini.SetLongValue("NavigationOverlay", "GlanceShape", navGlanceShape);
     ini.SetLongValue("NavigationOverlay", "GlanceOrientation", navGlanceOrientation);
     ini.SetLongValue("NavigationOverlay", "GlanceShowCardinals", navGlanceShowCardinals ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "GlanceCardinalOffset", navGlanceCardinalOffset);
+    ini.SetLongValue("NavigationOverlay", "GlanceRimIconOffset", navGlanceRimIconOffset);
     ini.SetLongValue("NavigationOverlay", "GlanceShowLocation", navGlanceShowLocation ? 1L : 0L);
+    ini.SetDoubleValue("NavigationOverlay", "GlanceLabelScale", navGlanceLabelScale);
+    ini.SetLongValue("NavigationOverlay", "GlanceLabelShowDistance", navGlanceLabelShowDistance ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "GlanceLabelCombatEnemy", navGlanceLabelCombatEnemy ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "GlanceLabelShowIcon", navGlanceLabelShowIcon ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "GlanceLabelDistanceUnits", navGlanceLabelDistanceUnits);
     ini.SetLongValue("NavigationOverlay", "InspectSizePct", navInspectSizePct);
     ini.SetLongValue("NavigationOverlay", "RefreshOnInspect", navRefreshOnInspect ? 1L : 0L);
     ini.SetLongValue("NavigationOverlay", "InspectModeToggleKeyDIK", navInspectModeToggleKey);
@@ -657,11 +696,24 @@ void Settings::Save() {
     ini.SetLongValue("NavigationOverlay", "GlanceActorDotSize", navGlanceActorDotSize);
     ini.SetLongValue("NavigationOverlay", "InspectActorDotSize", navInspectActorDotSize);
     ini.SetLongValue("NavigationOverlay", "ActorProximityUnits", static_cast<long>(navActorProximityUnits));
+    ini.SetLongValue("NavigationOverlay", "ActorHostilesOnRim", navActorHostilesOnRim ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "ActorHostileRangeUnits", static_cast<long>(navActorHostileRangeUnits));
 
     // Written in METERS (navMarkerRange is units internally).
     ini.SetLongValue("NavigationOverlay", "MarkerRange", static_cast<long>(navMarkerRange / Settings::kUnitsPerMeter));
     ini.SetLongValue("NavigationOverlay", "MaxQuestMarkers", navMaxQuestMarkers);
     ini.SetLongValue("NavigationOverlay", "MaxCustomMarkers", navMaxCustomMarkers);
+    ini.SetLongValue("NavigationOverlay", "RimMarkers", navRimMarkersEnabled ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "RimMarkersHideInCombat", navRimMarkersHideInCombat ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "HideCompass", navHideCompass ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "HideCNOQuestList", navHideCNOQuestList ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "RimMarkerRange", static_cast<long>(navRimMarkerRange / Settings::kUnitsPerMeter));
+    ini.SetLongValue("NavigationOverlay", "MaxRimMarkers", navMaxRimMarkers);
+    ini.SetLongValue("NavigationOverlay", "RimShowUndiscovered", navRimShowUndiscovered ? 1L : 0L);
+    for (std::size_t i = 0; i < std::size(navRimMode); ++i) {
+        const std::string key = std::string("RimShow") + MarkerFilterHook::GetModeName(static_cast<MarkerFilterHook::FocusMode>(i));
+        ini.SetLongValue("NavigationOverlay", key.c_str(), navRimMode[i] ? 1L : 0L);
+    }
     ini.SetLongValue("NavigationOverlay", "BeaconVisible", navBeaconVisible ? 1L : 0L);
     ini.SetLongValue("NavigationOverlay", "BeaconPillarHeight", static_cast<long>(navBeaconPillarHeight));
     ini.SetLongValue("NavigationOverlay", "BeaconNearScale", static_cast<long>(navBeaconNearScale * 100.0f + 0.5f));

@@ -1946,7 +1946,7 @@ void MapMarkerRenderer::DrawListPanel() {
                 if (destRow.isCustom) {
                     rowSrv = TextureManager::GetCategoryIcon(destRow.iconType);
                 } else {
-                    rowSrv = destRow.iconType == 61u ? TextureManager::GetIconByName("door")
+                    rowSrv = destRow.iconType == 61u ? TextureManager::GetCategoryIcon(61u)
                                                      : TextureManager::GetIconByName("destination");
                 }
                 const float iconSz = rowSrv && !MapDraw::IsWaypointType(destRow.iconType)
@@ -2925,21 +2925,9 @@ void MapMarkerRenderer::DrawFilterPanel() {
         if (titleFont) ImGui::PopFont();
         ImGui::SetWindowFontScale(effectiveBodyScale);
 
-        static constexpr const char* kModeIcons[] = {
-            "city",       // kCities
-            "stable",     // kTravel     - carriage travel, the dominant Travel marker
-            "cave",       // kDungeons
-            "camp",       // kCamps
-            "smelter",    // kIndustry   - generic industry; mills/mines are subtypes
-            "landmark",   // kLandmarks
-            "dwelling",   // kDwellings
-            "quest",      // kQuests
-            "shop",       // kShops
-            "loot",       // kLoot
-            "custom",     // kModded
-        };
-        static_assert(std::size(kModeIcons) == static_cast<std::size_t>(FocusMode::kCount),
-                      "kModeIcons must stay in sync with FocusMode");
+        static constexpr std::uint32_t kModeTypes[] = { 1, 21, 4, 5, 20, 11, 32, 0, 0, 0, 0 };
+        static_assert(std::size(kModeTypes) == static_cast<std::size_t>(FocusMode::kCount),
+                      "kModeTypes must stay in sync with FocusMode");
 
         ImDrawList* dl = ImGui::GetWindowDrawList();
 
@@ -3107,8 +3095,9 @@ void MapMarkerRenderer::DrawFilterPanel() {
 
             // Category icon. Blank entries reserve the column so every label
             // starts on the same x.
-            if (kModeIcons[i][0] != '\0') {
-                if (auto* srv = TextureManager::GetIconByName(kModeIcons[i])) {
+            if (MarkerFilterHook::kModeIcons[i][0] != '\0') {
+                if (auto* srv = kModeTypes[i] ? TextureManager::GetCategoryIcon(kModeTypes[i])
+                                              : TextureManager::GetIconByName(MarkerFilterHook::kModeIcons[i])) {
                     const float iy = rowMin.y + (rowH - iconSz) * 0.5f;
                     MapDraw::DrawIconFx(dl, srv,
                                         ImVec2(rowMin.x, iy),

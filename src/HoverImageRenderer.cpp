@@ -393,10 +393,9 @@ namespace {
     }
 
     // 1 game unit = 0.01428 m. Unit words are appended, never used as a format pattern.
-    std::string FormatDistance(float a_units) {
+    std::string FormatDistance(float a_units, int a_unitSystem) {
         const float m = a_units * 0.01428f;
-        const auto* set = Settings::GetSingleton();
-        if (set && set->statCardDistanceUnits == 1) {
+        if (a_unitSystem == 1) {
             const float ft = m * 3.28084f;
             const float mi = m / 1609.344f;
             if (mi < 0.1f) {
@@ -697,7 +696,7 @@ namespace {
                             if (ConvertToMapWorldspace(pws, pp)) {
                                 const float dx = pp.x - a_out.position.x;
                                 const float dy = pp.y - a_out.position.y;
-                                a_out.distanceText = FormatDistance(std::sqrt(dx * dx + dy * dy));
+                                a_out.distanceText = FormatDistance(std::sqrt(dx * dx + dy * dy), Settings::GetSingleton()->statCardDistanceUnits);
                             }
                         }
                     }
@@ -733,6 +732,75 @@ namespace {
         g_identityCache.identity = a_out;
         g_identityCache.valid = true;
     }
+}
+
+std::string HoverImageRenderer::FormatMarkerDistance(float a_units, int a_unitSystem) {
+    return FormatDistance(a_units, a_unitSystem);
+}
+
+bool HoverImageRenderer::IsWithinHoverRange(RE::MapMenu* a_menu, std::int32_t a_idx) {
+    const auto* settings = Settings::GetSingleton();
+    if (!a_menu || a_idx < 0 || settings->markerHoverRange <= 0 || !IsWorldMapShowing()) {
+        return true;
+    }
+
+    auto base   = reinterpret_cast<std::uintptr_t>(a_menu);
+    auto arrPtr = *reinterpret_cast<std::uintptr_t*>(base + 0x30470);
+    const auto arrSize = *reinterpret_cast<std::uint32_t*>(base + MarkerArrayCountOffset());
+    if (!arrPtr || static_cast<std::uint32_t>(a_idx) >= arrSize) {
+        return true;
+    }
+    const auto& entry = *reinterpret_cast<const MarkerEntry*>(
+        arrPtr + static_cast<std::uintptr_t>(a_idx) * 0x38);
+
+    RE::NiPointer<RE::TESObjectREFR> refr;
+    if (entry.handle == 0 || !RE::LookupReferenceByHandle(entry.handle, refr) || !refr) {
+        return true;
+    }
+    RE::NiPoint3 position = refr->GetPosition();
+    auto* worldspace = refr->GetWorldspace();
+    if (!worldspace || !ConvertToMapWorldspace(worldspace, position)) {
+        return true;
+    }
+
+    auto root = a_menu->GetRuntimeData2()->camera.cameraRoot;
+    if (!root) return true;
+    auto& children = root->GetChildren();
+    if (children.empty() || !children[0]) return true;
+    auto* camera = netimmerse_cast<RE::NiCamera*>(children[0].get());
+    auto* cursor = RE::MenuCursor::GetSingleton();
+    if (!camera || !cursor || cursor->screenWidthX <= 0.0f || cursor->screenWidthY <= 0.0f) {
+        return true;
+    }
+
+    auto& camData  = camera->GetRuntimeData();
+    auto& camData2 = camera->GetRuntimeData2();
+    const bool useFlatMapPlane = MapDraw::UsesFlatMapProjection(
+        camData.worldToCam, a_menu->GetRuntimeData2()->worldSpace);
+    const RE::NiPoint3 mapPos = MapDraw::MapProjectionPoint(position, useFlatMapPlane);
+    float sx = 0.0f, sy = 0.0f, sz = 0.0f;
+    if (!RE::NiCamera::WorldPtToScreenPt3(
+            camData.worldToCam, camData2.port, mapPos, sx, sy, sz, 1e-5f) ||
+        !MapDraw::ProjectionDepthValid(sz)) {
+        return true;
+    }
+
+    const float aspect = cursor->screenWidthX / cursor->screenWidthY;
+    const float dx = (sx - cursor->cursorPosX / cursor->screenWidthX) * aspect;
+    const float dy = (1.0f - sy) - cursor->cursorPosY / cursor->screenWidthY;
+    const float distance1080 = std::sqrt(dx * dx + dy * dy) * 1080.0f;
+    const bool  within = distance1080 <= static_cast<float>(settings->markerHoverRange);
+
+    static bool s_lastWithin = true;
+    if (within != s_lastWithin) {
+        s_lastWithin = within;
+        if (settings->cursorVerboseLog) {
+            logger::info("HoverRange: idx={} {} | distance1080={:.1f} range={} cursorSpace={:.0f}x{:.0f}",
+                         a_idx, within ? "in range" : "capped", distance1080,
+                         settings->markerHoverRange, cursor->screenWidthX, cursor->screenWidthY);
+        }
+    }
+    return within;
 }
 
 void HoverImageRenderer::SampleCardState(RE::MapMenu* a_menu) {
