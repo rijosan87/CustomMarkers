@@ -130,18 +130,29 @@ public:
     std::int32_t navInspectKey        = 0x31;  // N
     std::int32_t navInspectModifier   = 0;
     std::int32_t navInspectActivation = 0;     // 0 = Hold, 1 = Toggle
-    int navGlancePosX = 1625;
-    int navGlancePosY = 25;
+    // defaults land the disc top-right on a 1920x1080 display.
+    int navGlancePosX = 1594;
+    int navGlancePosY = 65;
     int navGlanceSize = 190;
     int navGlanceShape = 0;  // 0 = Circle, 1 = Square
-    int navGlanceOrientation = 0;  // 0 = Fixed North, 1 = Follow Camera
+    int navGlanceOrientation = 1;  // 0 = Fixed North, 1 = Follow Camera
     // N/E/S/W drawn just outside the rim; they follow the same rotation as the glyphs.
     bool navGlanceShowCardinals = true;
-    int navGlanceCardinalOffset = 0;
-    int navGlanceRimIconOffset = 0;
+    int navGlanceCardinalOffset = -24;
+    // 0 = the outer band, icon edge just outside the rim.
+    int navGlanceRimIconOffset = 10;
+    // Backing ring under the rim icons; width follows pin size and rim icon offset.
+    bool navGlanceRimBand = true;
+    // Radar's own border, independent of the global panel border. Default matches that border's default.
+    std::int32_t navGlanceBorderR = 140, navGlanceBorderG = 115;
+    std::int32_t navGlanceBorderB = 65, navGlanceBorderA = 255;
+    std::int32_t navGlanceRimBandR = 10, navGlanceRimBandG = 12;
+    std::int32_t navGlanceRimBandB = 14, navGlanceRimBandA = 200;
+    // Inner track for enemy dots and threat arcs. Px, positive = outward.
+    int navGlanceHostileTrackOffset = 6;
     // Location name under the radar, same source and style as the Inspect title.
-    bool navGlanceShowLocation = true;
-    float navGlanceLabelScale = 1.0f;
+    bool navGlanceShowLabel = true;
+    float navGlanceLabelScale = 0.7f;
     bool navGlanceLabelShowDistance = true;
     bool navGlanceLabelShowIcon = true;
     bool navGlanceLabelCombatEnemy = true;
@@ -233,9 +244,9 @@ public:
     std::int32_t navEntityIconBorderB = 255, navEntityIconBorderA = 170;
     std::int32_t navEntityIconTintR = 255, navEntityIconTintG = 255;
     std::int32_t navEntityIconTintB = 255, navEntityIconTintA = 255;
-    float navEntityIconPadding = 1.0f;
-    bool navEntityIcon3D = true;
-    bool navEntityIconShadow = true;
+    float navEntityIconPadding = 0.5f;
+    bool navEntityIcon3D = false;
+    bool navEntityIconShadow = false;
 
     std::int32_t navGlancePinSize  = 14;
     std::int32_t navInspectPinSize = 18;
@@ -360,16 +371,23 @@ public:
     float navActorProximityUnits = 1200.0f;
     bool navActorHostilesOnRim = true;
     float navActorHostileRangeUnits = 3000.0f;
+    // Off: off-radar enemies stay dots. Merge angle also sets the minimum arc width per enemy.
+    bool navActorHostileArcs = true;
+    int navActorHostileArcMergeAngle = 15;
+    int navActorHostileArcMinEnemies = 3;
     float navMarkerRange = 98000.0f;  // 1400 m * 70
-    std::int32_t navMaxQuestMarkers = 2;
+    // 0 = draw none.
+    std::int32_t navMaxQuestMarkers = 3;
     std::int32_t navMaxCustomMarkers = 5;
-    bool navRimMarkersEnabled = false;
+
+    // World map markers on the Mini Radar rim.
+    bool navRimMarkersEnabled = true;
     bool navRimMarkersHideInCombat = true;
     bool navHideCompass = false;
     bool navHideCNOQuestList = false;
     float navRimMarkerRange = 21000.0f;
-    std::int32_t navMaxRimMarkers = 12;
-    bool navRimShowUndiscovered = true;
+    std::int32_t navMaxRimMarkers = 15;
+    bool navRimShowUndiscovered = false;
     bool navRimMode[11] = { true, true, true, true, true, true, true, true, false, false, true };
 
     bool         navBeaconVisible = true;
@@ -382,9 +400,10 @@ public:
     std::int32_t navBeaconPinSize = 22;
     float        navBeaconFadeNearUnits = 350.0f;
     bool         navBeaconClearOnArrival = true;
-    bool         navBeaconEdgeIndicator = false;
+    bool         navBeaconEdgeIndicator = true;
     bool         navBeaconShowTitle = true;
     bool         navBeaconShowIcon = true;
+    int          navBeaconStyle = 0;  // 0 Wisp, 1 Gold, 2 Blue. Persisted, so append only.
     bool         inputVerboseLog = false;
 
     bool         cursorVerboseLog = false;
@@ -418,7 +437,7 @@ public:
     bool         lootBeamHideAfterInspecting = true;
     bool         lootBeamTrackDroppedWeapons = true;
     // 0 = Modern beam, 1 = Wisp. Both menus edit this same value.
-    std::int32_t lootBeamDesign = 0;
+    std::int32_t lootBeamDesign = 1;
     // Full pixel widths before interface scaling. Keep each design's original shape.
     float        lootBeamModernBottomWidth = 15.0f;
     float        lootBeamModernTopWidth = 10.0f;
@@ -492,7 +511,10 @@ public:
     std::int32_t pinTintR = 255, pinTintG = 250, pinTintB = 58, pinTintA = 255;
     ImU32 PinTintCol() const { return IM_COL32(pinTintR, pinTintG, pinTintB, pinTintA); }
 
-    bool         iconFx3D = true;
+    // silhouette. Custom pins only, on every surface they appear (DrawPin forwards
+    // these). Glance/Inspect entity PNGs have their own switches above; loot beams
+    // choose their own passes; all other icons draw plain.
+    bool         iconFx3D = false;
     bool         iconShadow = true;
 
     std::int32_t markerHoverOffsetX = 25;

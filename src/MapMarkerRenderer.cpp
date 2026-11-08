@@ -239,13 +239,8 @@ namespace {
         std::uint32_t type;     // +0x18  0 = base MapMarker, 1 = stacked alias
     };
 
-    constexpr bool IsDungeonMarkerType(std::uint16_t t) {
-        switch (t) {
-            case 4: case 6: case 7: case 8: case 9: case 10: case 12: case 15:
-                return true;   // Cave, Fort, NordicRuin, DwemerRuin, Shipwreck, Grove, DragonLair, Mine
-            default: return false;
-        }
-    }
+    // LocTypeClearable keyword gates the Cleared badge: marker types are unreliable under icon mods.
+    constexpr RE::FormID kLocTypeClearable = 0x000F5E80;
 
     // Filled disc + dark checkmark. Disc = the color knob (Settings), check
     // stroke is a fixed dark outline like every other badge.
@@ -900,7 +895,9 @@ void MapMarkerRenderer::Draw() {
             dl->AddCircle(dotCenter, kDotRadius * scale, MapTheme::kNoteBadgeOutline, 0, UIScale::Px(1.2f));
         }
 
+        // type==0, LocTypeClearable, and BGSLocation::IsCleared(). See
         {
+            auto* clearableKw = RE::TESForm::LookupByID<RE::BGSKeyword>(kLocTypeClearable);
             const float kClearedRadius = markerSet->clearedBadgeSize * badgeScale;
             const ImU32 clearedFill    = markerSet->ClearedBadgeCol();
             // Top-center: no X offset, lifted a touch more than the side badges.
@@ -919,11 +916,9 @@ void MapMarkerRenderer::Draw() {
                 RE::NiPointer<RE::TESObjectREFR> refr;
                 if (!RE::LookupReferenceByHandle(e->handle, refr) || !refr) continue;
 
-                // Dungeon-type gate.
                 auto* extra = refr->extraList.GetByType<RE::ExtraMapMarker>();
                 if (!extra || !extra->mapData) continue;
                 const auto markerType = extra->mapData->type.underlying();
-                if (!IsDungeonMarkerType(markerType)) continue;
                 // Ref-aware: a CoMAP-retyped dungeon needs its icon name to
                 // land in kDungeons rather than kModded.
                 if (MarkerFilterHook::IsMarkerFiltered(refr.get(), markerType)) continue;
@@ -931,7 +926,7 @@ void MapMarkerRenderer::Draw() {
                 // Cleared gate: the ref's OWN editor location, not the parent
                 // Hold (the Hold is never "cleared"; the dungeon is).
                 auto* loc = refr->GetEditorLocation();
-                if (!loc || !loc->IsCleared()) continue;
+                if (!loc || !clearableKw || !loc->HasKeyword(clearableKw) || !loc->IsCleared()) continue;
 
                 // Worldspace match (same pattern as the note-dot loop).
                 auto* ws = refr->GetWorldspace();
@@ -3503,12 +3498,13 @@ void MapMarkerRenderer::DrawNoteDialog() {
         dlgHEstimate += (std::max)(0.0f, hf->FontSize - baseFS) * effectiveTitleScale;
     }
 
+    // Title opens under the click; the shift cancels WindowPadding below, keep in sync.
     float dlgX, dlgY;
-    const float openOffset = UIScale::Px(16.0f);
+    const ImVec2 dlgPadding(UIScale::Px(12.0f), UIScale::Px(10.0f));
     const float edgeMargin = UIScale::Px(4.0f);
     if (_noteDialogX >= 0.0f && _noteDialogY >= 0.0f) {
-        dlgX = _noteDialogX * dispSize.x + openOffset;
-        dlgY = _noteDialogY * dispSize.y + openOffset;
+        dlgX = _noteDialogX * dispSize.x - dlgPadding.x;
+        dlgY = _noteDialogY * dispSize.y - dlgPadding.y;
         const float maxDlgX = (std::max)(edgeMargin, dispSize.x - dlgW - edgeMargin);
         const float maxDlgY = (std::max)(edgeMargin, dispSize.y - dlgHEstimate - edgeMargin);
         dlgX = std::clamp(dlgX, edgeMargin, maxDlgX);
@@ -3539,7 +3535,7 @@ void MapMarkerRenderer::DrawNoteDialog() {
     ImGui::PushStyleColor(ImGuiCol_CheckMark,      MapTheme::kDlgCheckMark());
     ImGui::PushStyleColor(ImGuiCol_Text,           MapTheme::kDlgText());
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, UIScale::Px(1.5f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,    ImVec2(UIScale::Px(12.0f), UIScale::Px(10.0f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,    dlgPadding);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,      ImVec2(UIScale::Px(8.0f),  UIScale::Px(8.0f)));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,     ImVec2(UIScale::Px(4.0f),  UIScale::Px(3.0f)));
 

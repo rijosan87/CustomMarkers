@@ -450,17 +450,6 @@ namespace SettingsMenu {
 
         ImGui::Spacing();
         ImGui::Separator();
-        SectionLabel(LocalizationManager::Get("Settings.SectionIconDesign").c_str());
-        MapDraw::ColorEdit4Hex(LocalizationManager::Get("Settings.PinTint").c_str(), settings->pinTintR, settings->pinTintG,
-                               settings->pinTintB, settings->pinTintA);
-        flowNext(LocalizationManager::Get("Settings.Icons3D"));
-        ImGui::Checkbox(LocalizationManager::Get("Settings.Icons3D").c_str(), &settings->iconFx3D);
-        const std::string iconShadowLabel = LocalizationManager::Get("Settings.BgShadow");
-        flowNext(iconShadowLabel);
-        ImGui::Checkbox((iconShadowLabel + "##IconShadow").c_str(), &settings->iconShadow);
-
-        ImGui::Spacing();
-        ImGui::Separator();
         SectionLabel(LocalizationManager::Get("Settings.SectionBackgroundDesign").c_str());
         const FlowItem backgroundItems[] = {
             { LocalizationManager::Get("Settings.BgShadow"),    &settings->bgShadow },
@@ -563,7 +552,15 @@ namespace SettingsMenu {
 
         if (ImGui::CollapsingHeader(LocalizationManager::Get("Settings.CustomPinsHeader").c_str())) {
             ImGui::Indent();
+            // navInspectPinSize, under Radar & Inspect).
             ImGui::SliderFloat(LocalizationManager::Get("Settings.IconScale").c_str(), &settings->markerIconScale, 0.5f, 2.0f, "%.2f");
+            // Unlike scale, the look below follows custom pins onto every surface.
+            // Tint alpha is strength: A=0 shows the icon art true, A=255 recolors.
+            MapDraw::ColorEdit4Hex(LocalizationManager::Get("Settings.PinTint").c_str(), settings->pinTintR, settings->pinTintG,
+                                   settings->pinTintB, settings->pinTintA);
+            ImGui::Checkbox(LocalizationManager::Get("Settings.Icons3D").c_str(), &settings->iconFx3D);
+            ImGui::SameLine();
+            ImGui::Checkbox((LocalizationManager::Get("Settings.BgShadow") + "##IconShadow").c_str(), &settings->iconShadow);
             ImGui::Unindent();
         }
 
@@ -671,14 +668,17 @@ namespace SettingsMenu {
                 ImGui::SliderInt(LocalizationManager::Get("Settings.MaxCustomMarkers").c_str(), &settings->navMaxCustomMarkers, 0, 30,
                                  settings->navMaxCustomMarkers == 0 ? unlimitedLabel.c_str() : "%d");
             }
+            ImGui::Checkbox(LocalizationManager::Get("Settings.HideCompass").c_str(), &settings->navHideCompass);
+            ImGui::Checkbox(LocalizationManager::Get("Settings.HideCNOQuestList").c_str(), &settings->navHideCNOQuestList);
             ImGui::Unindent();
         }
-        ImGui::Spacing();
+
         if (ImGui::CollapsingHeader(LocalizationManager::Get("Settings.SectionRimMarkers").c_str())) {
             ImGui::Indent();
             ImGui::Checkbox(LocalizationManager::Get("Settings.ShowRimMarkers").c_str(), &settings->navRimMarkersEnabled);
             ImGui::BeginDisabled(!settings->navRimMarkersEnabled);
             ImGui::Checkbox(LocalizationManager::Get("Settings.HideMapMarkersInCombat").c_str(), &settings->navRimMarkersHideInCombat);
+            ImGui::Checkbox(LocalizationManager::Get("Settings.RimShowUndiscovered").c_str(), &settings->navRimShowUndiscovered);
             {
                 float rangeMeters = settings->navRimMarkerRange / Settings::kUnitsPerMeter;
                 if (ImGui::SliderFloat((LocalizationManager::Get("Settings.ShowMarkersWithin") + "##rim").c_str(), &rangeMeters, 50.0f, 2000.0f, "%.0f m")) {
@@ -686,26 +686,21 @@ namespace SettingsMenu {
                 }
             }
             ImGui::SliderInt(LocalizationManager::Get("Settings.MaxRimMarkers").c_str(), &settings->navMaxRimMarkers, 1, 30);
-            ImGui::Checkbox(LocalizationManager::Get("Settings.RimShowUndiscovered").c_str(), &settings->navRimShowUndiscovered);
             ImGui::Spacing();
             ImGui::TextUnformatted(LocalizationManager::Get("Settings.RimCategories").c_str());
-            for (std::size_t i = 0; i < std::size(settings->navRimMode); ++i) {
-                const auto* name = MarkerFilterHook::GetModeName(static_cast<MarkerFilterHook::FocusMode>(i));
-                const std::string label = LocalizationManager::Get(std::string("FilterMode.") + name) + "##Rim" + name;
-                ImGui::Checkbox(label.c_str(), &settings->navRimMode[i]);
+            {
+                std::vector<FlowItem> items;
+                items.reserve(std::size(settings->navRimMode));
+                for (std::size_t i = 0; i < std::size(settings->navRimMode); ++i) {
+                    const auto* name = MarkerFilterHook::GetModeName(static_cast<MarkerFilterHook::FocusMode>(i));
+                    items.push_back({ LocalizationManager::Get(std::string("FilterMode.") + name) + "##Rim" + name,
+                                      &settings->navRimMode[i] });
+                }
+                CheckboxFlow(items.data(), static_cast<int>(items.size()));
             }
             ImGui::EndDisabled();
             ImGui::Unindent();
         }
-        ImGui::Spacing();
-
-        if (ImGui::CollapsingHeader(LocalizationManager::Get("Settings.SectionCompass").c_str())) {
-            ImGui::Indent();
-            ImGui::Checkbox(LocalizationManager::Get("Settings.HideCompass").c_str(), &settings->navHideCompass);
-            ImGui::Checkbox(LocalizationManager::Get("Settings.HideCNOQuestList").c_str(), &settings->navHideCNOQuestList);
-            ImGui::Unindent();
-        }
-        ImGui::Spacing();
 
         if (ImGui::CollapsingHeader(LocalizationManager::Get("Settings.EntityIconStyle").c_str())) {
             ImGui::Indent();
@@ -744,12 +739,18 @@ namespace SettingsMenu {
             ImGui::SliderFloat(LocalizationManager::Get("Settings.DetectionRange").c_str(), &settings->navActorProximityUnits, 200.0f, 4000.0f, "%.0f");
             ImGui::BeginDisabled(!settings->navActorShowHostile || !settings->navActorHostilesOnRim);
             ImGui::SliderFloat(LocalizationManager::Get("Settings.EnemyRange").c_str(), &settings->navActorHostileRangeUnits, 200.0f, 8000.0f, "%.0f");
+            ImGui::Checkbox(LocalizationManager::Get("Settings.EnemyThreatArcs").c_str(), &settings->navActorHostileArcs);
+            ImGui::BeginDisabled(!settings->navActorHostileArcs);
+            ImGui::SliderInt(LocalizationManager::Get("Settings.ArcMergeAngle").c_str(), &settings->navActorHostileArcMergeAngle, 5, 45);
+            ImGui::SliderInt(LocalizationManager::Get("Settings.ArcMinEnemies").c_str(), &settings->navActorHostileArcMinEnemies, 2, 10);
+            ImGui::EndDisabled();
             ImGui::EndDisabled();
             ImGui::Unindent();
         }
 
         if (ImGui::CollapsingHeader(LocalizationManager::Get("Settings.GlanceRadarHeader").c_str())) {
             ImGui::Indent();
+            SectionLabel(LocalizationManager::Get("Settings.GlanceSectionDisplay").c_str());
             ImGui::SliderInt((LocalizationManager::Get("Settings.Size") + "##glance").c_str(), &settings->navGlanceSize, 100, 500);
             {
                 const std::string circle = LocalizationManager::Get("Settings.Circle");
@@ -765,33 +766,9 @@ namespace SettingsMenu {
                 ImGui::Combo(LocalizationManager::Get("Settings.GlanceOrientation").c_str(),
                              &settings->navGlanceOrientation, orientations, IM_ARRAYSIZE(orientations));
             }
-            ImGui::Checkbox(LocalizationManager::Get("Settings.GlanceShowCardinals").c_str(), &settings->navGlanceShowCardinals);
-            ImGui::BeginDisabled(!settings->navGlanceShowCardinals);
-            ImGui::SliderInt(LocalizationManager::Get("Settings.GlanceCardinalOffset").c_str(), &settings->navGlanceCardinalOffset, -20, 40);
-            ImGui::EndDisabled();
-            ImGui::SliderInt(LocalizationManager::Get("Settings.GlanceRimIconOffset").c_str(), &settings->navGlanceRimIconOffset, -20, 40);
-            ImGui::Checkbox(LocalizationManager::Get("Settings.GlanceShowLocation").c_str(), &settings->navGlanceShowLocation);
-            ImGui::BeginDisabled(!settings->navGlanceShowLocation);
-            ImGui::SliderFloat(LocalizationManager::Get("Settings.GlanceLabelScale").c_str(), &settings->navGlanceLabelScale, 0.5f, 3.0f, "%.2f");
-            ImGui::Checkbox(LocalizationManager::Get("Settings.GlanceLabelShowDistance").c_str(), &settings->navGlanceLabelShowDistance);
-            ImGui::SameLine();
-            ImGui::Checkbox(LocalizationManager::Get("Settings.GlanceLabelShowIcon").c_str(), &settings->navGlanceLabelShowIcon);
-            ImGui::Checkbox(LocalizationManager::Get("Settings.ShowEnemyInCombat").c_str(), &settings->navGlanceLabelCombatEnemy);
-            {
-                const std::string unitMetric   = LocalizationManager::Get("Settings.DistanceUnitsMetric");
-                const std::string unitImperial = LocalizationManager::Get("Settings.DistanceUnitsImperial");
-                const char* labelUnits[] = { unitMetric.c_str(), unitImperial.c_str() };
-                ImGui::Combo((LocalizationManager::Get("Settings.DistanceUnits") + "##glancelabel").c_str(),
-                             &settings->navGlanceLabelDistanceUnits, labelUnits, IM_ARRAYSIZE(labelUnits));
-            }
-            ImGui::EndDisabled();
-            ImGui::SliderInt((LocalizationManager::Get("Settings.PinSize") + "##glance").c_str(), &settings->navGlancePinSize, 6, 24);
-            ImGui::SliderInt((LocalizationManager::Get("Settings.ActorDotSize") + "##glance").c_str(), &settings->navGlanceActorDotSize, 2, 16);
-            ImGui::SliderInt((LocalizationManager::Get("Settings.EntityIconSize") + "##glance").c_str(), &settings->navGlanceEntityIconSize, 12, 48);
             // World units from disc center to rim. Smaller = zoomed in; also
             // tightens the snapshot frustum pad so the backdrop sharpens.
             ImGui::SliderFloat((LocalizationManager::Get("Settings.ZoomMap") + "##glance").c_str(), &settings->navGlanceRangeUnits, 400.0f, 3000.0f, "%.0f");
-            ImGui::Spacing();
 
             {
                 const ImVec2 disp = ImGui::GetIO().DisplaySize;
@@ -806,6 +783,48 @@ namespace SettingsMenu {
                     settings->navGlancePosY = 22;
                 }
             }
+
+            SectionLabel(LocalizationManager::Get("Settings.GlanceSectionRim").c_str());
+            MapDraw::ColorEdit4Hex(LocalizationManager::Get("Settings.GlanceBorderColor").c_str(),
+                                   settings->navGlanceBorderR, settings->navGlanceBorderG,
+                                   settings->navGlanceBorderB, settings->navGlanceBorderA);
+            ImGui::Checkbox(LocalizationManager::Get("Settings.GlanceRimBand").c_str(), &settings->navGlanceRimBand);
+            ImGui::BeginDisabled(!settings->navGlanceRimBand);
+            MapDraw::ColorEdit4Hex(LocalizationManager::Get("Settings.GlanceRimBandColor").c_str(),
+                                   settings->navGlanceRimBandR, settings->navGlanceRimBandG,
+                                   settings->navGlanceRimBandB, settings->navGlanceRimBandA);
+            ImGui::EndDisabled();
+            ImGui::SliderInt(LocalizationManager::Get("Settings.GlanceRimIconOffset").c_str(), &settings->navGlanceRimIconOffset, -40, 40);
+            ImGui::BeginDisabled(!settings->navActorShowHostile || !settings->navActorHostilesOnRim);
+            ImGui::SliderInt(LocalizationManager::Get("Settings.EnemyTrackOffset").c_str(), &settings->navGlanceHostileTrackOffset, -40, 40);
+            ImGui::EndDisabled();
+            ImGui::Checkbox(LocalizationManager::Get("Settings.GlanceShowCardinals").c_str(), &settings->navGlanceShowCardinals);
+            ImGui::BeginDisabled(!settings->navGlanceShowCardinals);
+            ImGui::SliderInt(LocalizationManager::Get("Settings.GlanceCardinalOffset").c_str(), &settings->navGlanceCardinalOffset, -40, 40);
+            ImGui::EndDisabled();
+
+            SectionLabel(LocalizationManager::Get("Settings.GlanceSectionIcons").c_str());
+            ImGui::SliderInt((LocalizationManager::Get("Settings.PinSize") + "##glance").c_str(), &settings->navGlancePinSize, 6, 24);
+            ImGui::SliderInt((LocalizationManager::Get("Settings.ActorDotSize") + "##glance").c_str(), &settings->navGlanceActorDotSize, 2, 16);
+            ImGui::SliderInt((LocalizationManager::Get("Settings.EntityIconSize") + "##glance").c_str(), &settings->navGlanceEntityIconSize, 12, 48);
+
+            SectionLabel(LocalizationManager::Get("Settings.GlanceSectionLabel").c_str());
+            ImGui::Checkbox(LocalizationManager::Get("Settings.GlanceShowLabel").c_str(), &settings->navGlanceShowLabel);
+            // The label gates on GlanceShowLabel in MinimapRenderer, so these follow it.
+            ImGui::BeginDisabled(!settings->navGlanceShowLabel);
+            ImGui::SliderFloat(LocalizationManager::Get("Settings.GlanceLabelScale").c_str(), &settings->navGlanceLabelScale, 0.5f, 3.0f, "%.2f");
+            ImGui::Checkbox(LocalizationManager::Get("Settings.GlanceLabelShowDistance").c_str(), &settings->navGlanceLabelShowDistance);
+            ImGui::SameLine();
+            ImGui::Checkbox(LocalizationManager::Get("Settings.GlanceLabelShowIcon").c_str(), &settings->navGlanceLabelShowIcon);
+            ImGui::Checkbox(LocalizationManager::Get("Settings.ShowEnemyInCombat").c_str(), &settings->navGlanceLabelCombatEnemy);
+            {
+                const std::string unitMetric   = LocalizationManager::Get("Settings.DistanceUnitsMetric");
+                const std::string unitImperial = LocalizationManager::Get("Settings.DistanceUnitsImperial");
+                const char* labelUnits[] = { unitMetric.c_str(), unitImperial.c_str() };
+                ImGui::Combo((LocalizationManager::Get("Settings.DistanceUnits") + "##glancelabel").c_str(),
+                             &settings->navGlanceLabelDistanceUnits, labelUnits, IM_ARRAYSIZE(labelUnits));
+            }
+            ImGui::EndDisabled();
             ImGui::Spacing();
 
             if (ImGui::TreeNode((LocalizationManager::Get("Settings.EntitiesTree") + "##glance").c_str())) {
@@ -941,6 +960,13 @@ namespace SettingsMenu {
     static void PanelBeacons(Settings* settings) {
         if (ImGui::CollapsingHeader(LocalizationManager::Get("Settings.WorldBeaconsHeader").c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Indent();
+            ImGui::TextUnformatted(LocalizationManager::Get("Settings.BeaconStyle").c_str());
+            ImGui::SameLine();
+            ImGui::RadioButton((LocalizationManager::Get("Settings.BeaconStyleWisp") + "##beaconStyle").c_str(), &settings->navBeaconStyle, 0);
+            ImGui::SameLine();
+            ImGui::RadioButton((LocalizationManager::Get("Settings.BeaconStyleGold") + "##beaconStyle").c_str(), &settings->navBeaconStyle, 1);
+            ImGui::SameLine();
+            ImGui::RadioButton((LocalizationManager::Get("Settings.BeaconStyleBlue") + "##beaconStyle").c_str(), &settings->navBeaconStyle, 2);
             {
                 const FlowItem items[] = {
                     { LocalizationManager::Get("Settings.ShowTitle") + "##beacon", &settings->navBeaconShowTitle },

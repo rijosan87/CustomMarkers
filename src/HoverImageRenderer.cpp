@@ -1482,9 +1482,11 @@ void HoverImageRenderer::Draw() {
     const ImU32 colBody = withA(IM_COL32(set->bodyColorR, set->bodyColorG,
                                          set->bodyColorB, 255));
 
-    MapDraw::DrawPanelCard(dl, pMin, pMax, set->BgCol(), set->BorderCol(), a, geometryScale);
+    // A full-width image sits flush on top, so a border would split the card in two.
+    MapDraw::DrawPanelCard(dl, pMin, pMax, set->BgCol(), set->BorderCol(), a, geometryScale,
+                           /*allowBorder=*/imgSrv == nullptr);
 
-    const ImU32 colSep    = withA(MapTheme::kSeparator);
+    const ImU32 colSep   = withA(MapTheme::kSeparator);
 
     auto* font = ImGui::GetFont();
     float cy = py + kPadY;

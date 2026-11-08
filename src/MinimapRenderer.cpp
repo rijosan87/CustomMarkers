@@ -339,8 +339,8 @@ namespace {
         MapDraw::DrawIconFx(dl, icon, inner.min, inner.max,
                             FadeCol(IM_COL32(settings->navEntityIconTintR, settings->navEntityIconTintG,
                                              settings->navEntityIconTintB, settings->navEntityIconTintA), alpha),
-                            settings->navEntityIconShadow ? 1 : 0,
-                            settings->navEntityIcon3D ? 1 : 0);
+                            settings->navEntityIconShadow,
+                            settings->navEntityIcon3D);
         if (withBadge) {
             dl->AddRect(min, max, FadeCol(IM_COL32(
                 settings->navEntityIconBorderR, settings->navEntityIconBorderG,
@@ -360,7 +360,8 @@ namespace {
 
     float SmoothstepLocal(float t) { return t * t * (3.0f - 2.0f * t); }
 
-    constexpr float kViewConeHalf = 0.6108652f; // 35 deg
+    // 25 deg, also the look-at selection angle, so what is named matches what is drawn.
+    constexpr float kViewConeHalf = 0.4363323f; // 25 deg
     // a_alpha: crossfade multiplier, default 1.0 so any other caller is unaffected.
     void DrawViewCone(ImDrawList* dl, const ImVec2& a_origin, float a_mapAngle, float a_radius,
                       float a_alpha = 1.0f) {
@@ -377,6 +378,10 @@ namespace {
         dl->AddLine(a_origin, e1, FadeCol(IM_COL32(255, 255, 255, 60), a_alpha), UIScale::Px(1.0f));
         dl->AddLine(a_origin, e2, FadeCol(IM_COL32(255, 255, 255, 60), a_alpha), UIScale::Px(1.0f));
     }
+
+    // Rim entries are selected where they are drawn, not on their true bearing.
+    std::unordered_map<RE::FormID, float> s_rimOffsets;  // Eased rim spacing, radians of bearing
+
     const RimMarkerSource::Entry* PickLookAtMarker(const std::vector<RimMarkerSource::Entry>& a_entries,
                                                    const std::vector<const RimMarkerSource::Entry*>& a_priority,
                                                    const RE::NiPoint3& a_player, float a_cameraAngle,
@@ -392,20 +397,23 @@ namespace {
         };
         std::vector<Candidate> inCone;
         float smallest = kViewConeHalf;
-        const auto consider = [&](const RimMarkerSource::Entry& e, float a_maxDist) {
+        const auto consider = [&](const RimMarkerSource::Entry& e, float a_maxDist, float a_drawnOffset) {
             if (e.name.empty()) return;
             const float dx = e.position.x - a_player.x;
             const float dy = e.position.y - a_player.y;
             const float dist = std::hypot(dx, dy);
             if (dist >= a_maxDist) return;
-            const float offset = std::abs(std::remainder(std::atan2(dx, dy) - a_cameraAngle, 6.2831853f));
+            const float offset = std::abs(std::remainder(std::atan2(dx, dy) + a_drawnOffset - a_cameraAngle, 6.2831853f));
             if (offset > kViewConeHalf) return;
             inCone.push_back({ &e, offset, dist });
             smallest = (std::min)(smallest, offset);
         };
-        for (const auto& e : a_entries) consider(e, a_range);
+        for (const auto& e : a_entries) {  // Past range: faded to nothing on the radar
+            const auto it = s_rimOffsets.find(e.formID);
+            consider(e, a_range, it != s_rimOffsets.end() ? it->second : 0.0f);
+        }
         for (const auto* e : a_priority) {
-            if (e) consider(*e, (std::numeric_limits<float>::max)());
+            if (e) consider(*e, (std::numeric_limits<float>::max)(), 0.0f);
         }
 
         const Candidate* best = nullptr;
@@ -587,6 +595,174 @@ namespace {
         };
         for (const auto& edge : edges) {
             MapDraw::PolylineVertexColored(dl, edge, edgeColors, 3, UIScale::Px(1.0f));
+        }
+    }
+
+    // Off-radar hostile, by value: ghosts can be erased between frames. Glance only.
+    struct ThreatPoint {
+        RE::FormID id;
+        float bearing;
+        float weight;   // arcBlend * ghost alpha, what this enemy adds to a drawn arc
+        float dist;
+        bool engaged;
+        bool held;      // arcBlend >= 0.5, the hysteresis input
+        bool offRadar;  // false while an enemy that just entered the radar drains out of its arc
+    };
+
+    struct ThreatArc {
+        float start;
+        float end;
+        float count;
+        float nearest;
+        float engaged;
+        float maxWeight;
+    };
+
+    // Groups by bearing gap, picks which groups are arcs, and splits at the 90 degree cap.
+    // Membership uses the current count, not arcBlend, so groups can leave the hold state.
+    void BuildThreatArcs(std::vector<ThreatPoint>& a_points, float a_mergeAngle, int a_minEnemies,
+                         std::unordered_set<RE::FormID>& a_members, std::vector<ThreatArc>& a_arcs) {
+        constexpr float kTwoPi = 6.2831853f;
+        constexpr float kMaxSpan = 1.5707963f;      // 90 deg
+        constexpr float kChunkGap = 0.02617994f;    // 1.5 deg
+        if (a_points.empty()) return;
+
+        for (auto& p : a_points) {
+            p.bearing = std::fmod(p.bearing, kTwoPi);
+            if (p.bearing < 0.0f) p.bearing += kTwoPi;
+        }
+        std::sort(a_points.begin(), a_points.end(),
+                  [](const ThreatPoint& a, const ThreatPoint& b) { return a.bearing < b.bearing; });
+
+        // Start after the largest gap so no group straddles the wrap.
+        std::size_t first = 0;
+        float largest = a_points.front().bearing + kTwoPi - a_points.back().bearing;
+        for (std::size_t i = 1; i < a_points.size(); ++i) {
+            const float gap = a_points[i].bearing - a_points[i - 1].bearing;
+            if (gap > largest) {
+                largest = gap;
+                first = i;
+            }
+        }
+        std::rotate(a_points.begin(), a_points.begin() + static_cast<std::ptrdiff_t>(first), a_points.end());
+        for (std::size_t i = 1; i < a_points.size(); ++i) {
+            if (a_points[i].bearing < a_points[0].bearing) a_points[i].bearing += kTwoPi;
+        }
+
+        const float mergeHalf = a_mergeAngle * 0.5f;
+        const auto halfOf = [&](const ThreatPoint& p) { return mergeHalf * p.weight; };
+        std::size_t groupBegin = 0;
+        while (groupBegin < a_points.size()) {
+            std::size_t groupEnd = groupBegin + 1;
+            while (groupEnd < a_points.size() &&
+                   a_points[groupEnd].bearing - a_points[groupEnd - 1].bearing <= a_mergeAngle) {
+                ++groupEnd;
+            }
+
+            int count = 0;
+            bool held = false;
+            for (std::size_t i = groupBegin; i < groupEnd; ++i) {
+                if (!a_points[i].offRadar) continue;
+                ++count;
+                held = held || a_points[i].held;
+            }
+            if (count >= a_minEnemies || (held && count >= (std::max)(2, a_minEnemies - 1))) {
+                for (std::size_t i = groupBegin; i < groupEnd; ++i) {
+                    if (a_points[i].offRadar) a_members.insert(a_points[i].id);
+                }
+            }
+
+            const std::size_t firstArc = a_arcs.size();
+            std::size_t chunkBegin = groupBegin;
+            while (chunkBegin < groupEnd) {
+                const auto& lead = a_points[chunkBegin];
+                const float start = lead.bearing - halfOf(lead);
+                ThreatArc arc{ start, lead.bearing + halfOf(lead), 0.0f, FLT_MAX, 0.0f, 0.0f };
+                std::size_t chunkEnd = chunkBegin;
+                while (chunkEnd < groupEnd) {
+                    const auto& p = a_points[chunkEnd];
+                    const float end = p.bearing + halfOf(p);
+                    if (chunkEnd > chunkBegin && end - start > kMaxSpan) break;
+                    arc.end = (std::max)(arc.end, end);
+                    arc.count += p.weight;
+                    arc.nearest = (std::min)(arc.nearest, p.dist);
+                    if (p.engaged) arc.engaged = (std::max)(arc.engaged, p.weight);
+                    arc.maxWeight = (std::max)(arc.maxWeight, p.weight);
+                    ++chunkEnd;
+                }
+                if (chunkBegin > groupBegin) {
+                    // Trim the shared end against the previous chunk so overlap never doubles alpha.
+                    const float mid = (a_points[chunkBegin - 1].bearing + lead.bearing) * 0.5f;
+                    a_arcs.back().end = (std::min)(a_arcs.back().end, mid - kChunkGap);
+                    arc.start = (std::max)(arc.start, mid + kChunkGap);
+                }
+                a_arcs.push_back(arc);
+                chunkBegin = chunkEnd;
+            }
+            // Only after trims, since a trim writes through a_arcs.back().
+            a_arcs.erase(std::remove_if(a_arcs.begin() + static_cast<std::ptrdiff_t>(firstArc), a_arcs.end(),
+                                        [](const ThreatArc& a) { return a.maxWeight < 0.01f; }),
+                         a_arcs.end());
+            groupBegin = groupEnd;
+        }
+    }
+
+    // RayIntersection follows circle, edge and corner alike, so there is no shape branch.
+    // No pulse: DrawGlance already pulses the rim red in combat.
+    void DrawThreatArcs(ImDrawList* dl, const MapDraw::RoundedRectBoundary& a_boundary,
+                        const std::vector<ThreatArc>& a_arcs, float a_glanceRange, float a_hostileRange,
+                        float a_trackExtent, float a_alpha) {
+        constexpr float kSampleStep = 0.06981317f;  // 4 deg
+        constexpr float kTaperBand = 0.35f;
+        // Under about 30 deg the arc reads as a straight bar.
+        constexpr float kMinSpan = 0.5235988f;
+        constexpr float kInnerGlowAlpha = 0.35f;
+        const ImVec2 uv = ImGui::GetDrawListSharedData()->TexUvWhitePixel;
+        const float nearGlow = UIScale::Px(3.0f);
+        const float farGlow = UIScale::Px(12.0f);
+        for (const auto& arc : a_arcs) {
+            if (arc.end <= arc.start) continue;
+            const float mid = (arc.start + arc.end) * 0.5f;
+            const float halfSpan = (std::max)((arc.end - arc.start) * 0.5f, kMinSpan * 0.5f * arc.maxWeight);
+            const float arcStart = mid - halfSpan;
+            const float span = 2.0f * halfSpan;
+
+            const float proximity = 1.0f - std::clamp((arc.nearest - a_glanceRange) /
+                (std::max)(1.0f, a_hostileRange - a_glanceRange), 0.0f, 1.0f);
+            const float strength = std::clamp(0.35f + 0.12f * (arc.count - 1.0f) + 0.35f * proximity, 0.35f, 1.0f) *
+                arc.maxWeight;
+            const float thickness = UIScale::Px(std::clamp(1.5f + 0.25f * (arc.count - 1.0f), 2.0f, 3.0f));
+            const float outerExtent = a_trackExtent - thickness * 0.5f;
+            const ImU32 base = MapDraw::LerpColor(MapTheme::kActorHostileIdle, MapTheme::kActorHostile,
+                                                  std::clamp(arc.engaged, 0.0f, 1.0f));
+            const ImU32 clear = MapDraw::WithAlpha(base, 0.0f);
+
+            const int samples = std::clamp(static_cast<int>(span / kSampleStep), 8, 24);
+            dl->PrimReserve((samples - 1) * 18, samples * 4);
+            const unsigned int vtxBase = dl->_VtxCurrentIdx;
+            for (int i = 0; i < samples; ++i) {
+                const float t = static_cast<float>(i) / static_cast<float>(samples - 1);
+                const float angle = arcStart + t * span;
+                const float taper = (std::min)(1.0f, (std::min)(t, 1.0f - t) / kTaperBand);
+                const ImU32 col = FadeCol(base, a_alpha * strength * taper);
+                const ImU32 glowCol = FadeCol(base, a_alpha * strength * taper * kInnerGlowAlpha);
+                dl->PrimWriteVtx(a_boundary.RayIntersection(angle, outerExtent), uv, col);
+                dl->PrimWriteVtx(a_boundary.RayIntersection(angle, outerExtent + thickness), uv, col);
+                dl->PrimWriteVtx(a_boundary.RayIntersection(angle, outerExtent + thickness + nearGlow), uv, glowCol);
+                dl->PrimWriteVtx(a_boundary.RayIntersection(angle, outerExtent + thickness + farGlow), uv, clear);
+            }
+            for (int i = 0; i < samples - 1; ++i) {
+                for (unsigned int band = 0; band < 3; ++band) {
+                    const unsigned int a = vtxBase + static_cast<unsigned int>(i) * 4 + band;
+                    const unsigned int b = a + 4;
+                    dl->PrimWriteIdx(static_cast<ImDrawIdx>(a));
+                    dl->PrimWriteIdx(static_cast<ImDrawIdx>(a + 1));
+                    dl->PrimWriteIdx(static_cast<ImDrawIdx>(b + 1));
+                    dl->PrimWriteIdx(static_cast<ImDrawIdx>(a));
+                    dl->PrimWriteIdx(static_cast<ImDrawIdx>(b + 1));
+                    dl->PrimWriteIdx(static_cast<ImDrawIdx>(b));
+                }
+            }
         }
     }
 
@@ -1360,21 +1536,34 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
         cardinalRing = cardinalGap + 2.0f * cardinalHalfDiag;
     }
 
+    // Rim icons sit outside the rim, enemies inside, so they never overlap. Negative extent grows the boundary.
+    const float kGlanceRimMarkerInset = -UIScale::Px(static_cast<float>(settings->navGlancePinSize) * 0.5f + 2.0f +
+                                                     static_cast<float>(settings->navGlanceRimIconOffset));
+    // 10 px past the icon's outer edge.
+    const float rimBandWidth = UIScale::Px(static_cast<float>(settings->navGlancePinSize + 12 +
+                                                              settings->navGlanceRimIconOffset));
+    const bool showRimBand = settings->navGlanceRimBand && rimBandWidth > 0.0f;
+    // The band counts here so the screen clamp and the label below the radar clear it too.
+    const float rimIconRing = (std::max)(showRimBand ? rimBandWidth : 0.0f,
+                                         UIScale::Px(static_cast<float>(settings->navGlancePinSize + 2 +
+                                                                        (std::max)(0, settings->navGlanceRimIconOffset))));
+    const float bandRing = (std::max)(cardinalRing, rimIconRing);
+
+    // disc fully off-screen, inset by the outer band so letters and icons stay visible.
     const auto axisMax = [&](float a_disp) {
-        return (std::max)(cardinalRing, a_disp - 2.0f * kGlanceRadius - cardinalRing);
+        return (std::max)(bandRing, a_disp - 2.0f * kGlanceRadius - bandRing);
     };
     const float maxX = axisMax(disp.x);
     const float maxY = axisMax(disp.y);
     // Settings sliders read these as their max (see GlanceBounds.h).
     GlanceBounds::maxPosX.store(static_cast<int>(std::floor(maxX)));
     GlanceBounds::maxPosY.store(static_cast<int>(std::floor(maxY)));
-    const float posX = std::clamp(static_cast<float>(settings->navGlancePosX), cardinalRing, maxX);
-    const float posY = std::clamp(static_cast<float>(settings->navGlancePosY), cardinalRing, maxY);
+    const float posX = std::clamp(static_cast<float>(settings->navGlancePosX), bandRing, maxX);
+    const float posY = std::clamp(static_cast<float>(settings->navGlancePosY), bandRing, maxY);
     const ImVec2 center(posX + kGlanceRadius, posY + kGlanceRadius);
 
 
     const float kGlanceSquareRounding = UIScale::Px(10.0f);
-    const float kGlanceRimMarkerInset = UIScale::Px(8.0f - static_cast<float>(settings->navGlanceRimIconOffset));
     const float halfSize = kGlanceRadius;
     const bool square = settings->navGlanceShape == 1;
     const bool followCamera = settings->navGlanceOrientation == 1;
@@ -1387,6 +1576,26 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
     // The engine snapshot contains transparent pixels. Keep the same strong
     // backfill opacity as Inspect so both surfaces composite consistently.
     const ImU32 bgFill = FadeCol(IM_COL32(10, 12, 14, 230), a_alpha);
+    if (showRimBand) {
+        // A stroke, since a fill would show through the disc's transparent pixels.
+        const ImU32 bandCol = FadeCol(IM_COL32(settings->navGlanceRimBandR, settings->navGlanceRimBandG,
+                                               settings->navGlanceRimBandB, settings->navGlanceRimBandA), a_alpha);
+        const ImU32 bandEdge = FadeCol(IM_COL32(settings->navGlanceBorderR, settings->navGlanceBorderG,
+                                                settings->navGlanceBorderB, 110), a_alpha);
+        const float edgeW = UIScale::Px(1.0f);
+        const float midOffset = rimBandWidth * 0.5f;
+        if (square) {
+            const ImVec2 midMin(boundary.Min().x - midOffset, boundary.Min().y - midOffset);
+            const ImVec2 midMax(boundary.Max().x + midOffset, boundary.Max().y + midOffset);
+            const ImVec2 outerMin(boundary.Min().x - rimBandWidth, boundary.Min().y - rimBandWidth);
+            const ImVec2 outerMax(boundary.Max().x + rimBandWidth, boundary.Max().y + rimBandWidth);
+            dl->AddRect(midMin, midMax, bandCol, boundary.rounding + midOffset, 0, rimBandWidth);
+            dl->AddRect(outerMin, outerMax, bandEdge, boundary.rounding + rimBandWidth, 0, edgeW);
+        } else {
+            dl->AddCircle(center, halfSize + midOffset, bandCol, 96, rimBandWidth);
+            dl->AddCircle(center, halfSize + rimBandWidth, bandEdge, 96, edgeW);
+        }
+    }
     if (square) {
         dl->AddRectFilled(boundary.Min(), boundary.Max(), bgFill, boundary.rounding);
     } else {
@@ -1507,14 +1716,17 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
         const float combatT = SmoothstepLocal(_combatFade);
         const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(ImGui::GetTime()) * 4.5f);
         const float redT = combatT * (0.45f + 0.55f * pulse);
-        // User border color is the BASE of the lerp; combat still drives it to red.
-        const ImU32 rimCol = MapDraw::LerpColor(Settings::GetSingleton()->BorderCol(),
+        // Radar border color is the lerp base; combat drives it to red.
+        const ImU32 rimCol = MapDraw::LerpColor(IM_COL32(settings->navGlanceBorderR, settings->navGlanceBorderG,
+                                                         settings->navGlanceBorderB, settings->navGlanceBorderA),
                                                 MapTheme::kCombatBorder, redT);
         const float rimW = UIScale::Px(1.5f + 1.0f * combatT * pulse);
+        // With the rim background on, this line only shows in combat.
+        const float rimAlpha = showRimBand ? a_alpha * combatT : a_alpha;
         if (square) {
-            dl->AddRect(boundary.Min(), boundary.Max(), FadeCol(rimCol, a_alpha), boundary.rounding, 0, rimW);
+            dl->AddRect(boundary.Min(), boundary.Max(), FadeCol(rimCol, rimAlpha), boundary.rounding, 0, rimW);
         } else {
-            dl->AddCircle(center, halfSize, FadeCol(rimCol, a_alpha), 64, rimW);
+            dl->AddCircle(center, halfSize, FadeCol(rimCol, rimAlpha), 64, rimW);
         }
     }
 
@@ -1637,28 +1849,74 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
         auto* s = Settings::GetSingleton();
         const float actorDotRadius = UIScale::Px(static_cast<float>(s->navGlanceActorDotSize));
         const float actorExtent = actorDotRadius + UIScale::Px(1.5f);
-        for (const auto& [formID, ghost] : _actorGhosts) {
-            using Al = ActorMarkerSource::ActorMarker::Allegiance;
+        const float hostileExtent = actorExtent - UIScale::Px(static_cast<float>(s->navGlanceHostileTrackOffset));
+        using Al = ActorMarkerSource::ActorMarker::Allegiance;
+
+        // Threat arcs: a crowded off-radar group becomes one arc, smaller groups stay dots.
+        std::unordered_set<RE::FormID> arcMembers;
+        std::vector<ThreatArc> threatArcs;
+        const bool arcsOn = s->navActorHostileArcs && s->navActorShowHostile && s->navActorHostilesOnRim;
+        if (arcsOn) {
+            std::vector<ThreatPoint> threats;
+            for (const auto& [formID, ghost] : _actorGhosts) {
+                if (Al::Hostile != ghost.allegiance || ghost.alpha <= 0.0f) continue;
+                const ImVec2 rp = WorldToGlance(ghost.position, f.playerPos, glanceScale, glanceRotation);
+                const bool offRadar = !boundary.Contains(ImVec2(center.x + rp.x, center.y + rp.y), hostileExtent);
+                if (!offRadar && ghost.arcBlend <= 0.0f) continue;
+                threats.push_back({ formID, std::atan2(rp.y, rp.x), ghost.arcBlend * ghost.alpha,
+                                    std::hypot(ghost.position.x - f.playerPos.x, ghost.position.y - f.playerPos.y),
+                                    ghost.engaged, ghost.arcBlend >= 0.5f, offRadar });
+            }
+            BuildThreatArcs(threats, static_cast<float>(s->navActorHostileArcMergeAngle) * 0.01745329f,
+                            s->navActorHostileArcMinEnemies, arcMembers, threatArcs);
+        }
+        const float arcBlendStep = ImGui::GetIO().DeltaTime / 0.25f;
+
+        // Thin ring through the dot centers, so the track and an arc's curve are visible.
+        if (s->navActorShowHostile && s->navActorHostilesOnRim) {
+            constexpr float kTrackRingAlpha = 0.3f;
+            const ImU32 ringCol = FadeCol(IM_COL32(s->navGlanceBorderR, s->navGlanceBorderG,
+                                                   s->navGlanceBorderB, s->navGlanceBorderA), a_alpha * kTrackRingAlpha);
+            const float ringHalf = (std::max)(1.0f, halfSize - hostileExtent);
+            if (square) {
+                const float ringRound = (std::max)(0.0f, boundary.rounding - hostileExtent);
+                dl->AddRect(ImVec2(center.x - ringHalf, center.y - ringHalf), ImVec2(center.x + ringHalf, center.y + ringHalf),
+                            ringCol, ringRound, 0, UIScale::Px(1.0f));
+            } else {
+                dl->AddCircle(center, ringHalf, ringCol, 64, UIScale::Px(1.0f));
+            }
+        }
+
+        for (auto& [formID, ghost] : _actorGhosts) {
             if (Al::Ally == ghost.allegiance && !s->navActorShowAlly) continue;
             if (Al::Hostile == ghost.allegiance && !s->navActorShowHostile) continue;
             if (Al::Neutral == ghost.allegiance && !s->navActorShowNeutral) continue;
             if (Al::Animal == ghost.allegiance && !s->navActorShowAnimal) continue;
 
+            ghost.arcBlend = std::clamp(ghost.arcBlend + (arcMembers.count(formID) ? arcBlendStep : -arcBlendStep),
+                                        0.0f, 1.0f);
+
             ImVec2 rp = WorldToGlance(ghost.position, f.playerPos, glanceScale, glanceRotation);
             const ImVec2 projected(center.x + rp.x, center.y + rp.y);
             ImVec2 g = projected;
-            if (!boundary.Contains(projected, actorExtent)) {
+            const float extent = Al::Hostile == ghost.allegiance ? hostileExtent : actorExtent;
+            if (!boundary.Contains(projected, extent)) {
+                // Enemies hold the inner track until Enemy Range fades them; same extent as the test.
                 if (Al::Hostile != ghost.allegiance || !s->navActorHostilesOnRim) continue;
-                g = boundary.ClampFromCenter(projected, actorExtent);
+                g = boundary.ClampFromCenter(projected, extent);
             }
+            const float dotAlpha = a_alpha * ghost.alpha * (1.0f - ghost.arcBlend);
+            if (dotAlpha <= 0.0f) continue;
 
             const ImU32 col = Al::Ally == ghost.allegiance ? MapTheme::kActorAlly
                              : Al::Hostile == ghost.allegiance ? (ghost.engaged ? MapTheme::kActorHostile : MapTheme::kActorHostileIdle)
                              : Al::Animal == ghost.allegiance ? MapTheme::kActorAnimal
                              : MapTheme::kActorNeutral;
             // ghost.alpha carries fade-in AND fade-out (merge fade machine).
-            MapDraw::DrawDotFx(dl, g, actorDotRadius, FadeCol(col, a_alpha * ghost.alpha));
+            MapDraw::DrawDotFx(dl, g, actorDotRadius, FadeCol(col, dotAlpha));
         }
+        DrawThreatArcs(dl, boundary, threatArcs, settings->navGlanceRangeUnits, s->navHostileRangeUnits(),
+                       hostileExtent, a_alpha);
     }
     auto* directQuestSrv = TextureManager::GetIconByName("activemarker");
     auto* doorQuestSrv = TextureManager::GetIconByName("active");
@@ -1708,7 +1966,7 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
     std::vector<RimMarkerSource::Entry> questEntries;
     std::vector<const RimMarkerSource::Entry*> priorityEntries;
     const RimMarkerSource::Entry* look = nullptr;
-    if (settings->navGlanceShowLocation) {
+    if (settings->navGlanceShowLabel) {
         std::shared_ptr<const std::vector<ActiveQuestRow>> radarRows;
         if (maxQuest > 0 && !f.questTargets.empty()) {
             QuestTracker::GetSingleton()->RequestRadarRefresh();
@@ -1797,7 +2055,7 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
             : std::format("{}, {}", labelName, focusDistance);
     }
     bool enemyLabel = false;
-    if (settings->navGlanceShowLocation && settings->navGlanceLabelCombatEnemy &&
+    if (settings->navGlanceShowLabel && settings->navGlanceLabelCombatEnemy &&
         settings->navActorShowHostile &&
         static_cast<float>(ImGui::GetTime()) - _lastCombatTime < 1.5f) {
         if (const auto* enemy = PickLookAtEnemy(_actorGhosts, f.playerPos, f.cameraAngle)) {
@@ -1819,11 +2077,72 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
 
     if (rimValid) {
         constexpr float kRimUndiscoveredAlpha = 0.5f;
-        constexpr float kRimRangeFadeBand = 0.1f;
+        constexpr float kRimRangeFadeBand = 0.25f;  // Outer quarter of range, so arrivals ease in
         const float pinDiameter = UIScale::Px(static_cast<float>(settings->navGlancePinSize));
         const float pinScale = pinDiameter / (2.0f * MapDraw::kPinRadius);
         const float range = settings->navRimMarkerRange;
         const auto* rimLook = look && !look->priority ? look : nullptr;
+
+        // Rim spacing, in world bearing so turning the camera never reshuffles the result.
+        // Solved from true bearings each frame, then eased. Present thread only.
+        struct RimSlot {
+            RE::FormID id;
+            float bearing;
+            float angle;
+        };
+        std::vector<RimSlot> rimSlots;
+        rimSlots.reserve(rim->entries.size());
+        for (const auto& e : rim->entries) {
+            const float dx = e.position.x - f.playerPos.x;
+            const float dy = e.position.y - f.playerPos.y;
+            if (_rimCombatFade <= 0.0f || std::hypot(dx, dy) >= range) continue;
+            const ImVec2 rp = WorldToGlance(e.position, f.playerPos, glanceScale, glanceRotation);
+            if (boundary.Contains(ImVec2(center.x + rp.x, center.y + rp.y))) continue;
+            const float bearing = std::atan2(dx, dy);
+            rimSlots.push_back({ e.formID, bearing, bearing });
+        }
+        std::ranges::sort(rimSlots, [](const RimSlot& a, const RimSlot& b) {
+            return a.bearing != b.bearing ? a.bearing < b.bearing : a.id < b.id;
+        });
+        const auto rimSlotCount = rimSlots.size();
+        std::unordered_map<RE::FormID, float> rimTargets;
+        if (rimSlotCount > 1) {
+            constexpr float kTwoPi = 6.2831853f;
+            constexpr int kRelaxPasses = 12;  // Each pass only moves neighbours, so a tight stack needs several
+            // Face centres are the tightest spot on a square, so this radius holds for both shapes.
+            const float rimRadius = (std::max)(1.0f, kGlanceRadius - kGlanceRimMarkerInset);
+            const float minGap = (std::min)(1.05f * pinDiameter / rimRadius,
+                                            kTwoPi / static_cast<float>(rimSlotCount));
+            // Independent of focus: selection reads the drawn position.
+            const auto separate = [&](RimSlot& a_low, RimSlot& a_high, float a_wrap) {
+                const float overlap = minGap - (a_high.angle + a_wrap - a_low.angle);
+                if (overlap <= 0.0f) return;
+                a_low.angle -= overlap * 0.5f;
+                a_high.angle += overlap * 0.5f;
+            };
+            for (int pass = 0; pass < kRelaxPasses; ++pass) {
+                for (std::size_t i = 0; i + 1 < rimSlotCount; ++i) separate(rimSlots[i], rimSlots[i + 1], 0.0f);
+                separate(rimSlots.back(), rimSlots.front(), kTwoPi);
+            }
+        }
+        for (const auto& slot : rimSlots) rimTargets[slot.id] = slot.angle - slot.bearing;
+        std::erase_if(s_rimOffsets, [&](const auto& a_kv) { return !rimTargets.contains(a_kv.first); });
+        constexpr float kRimEaseRate = 10.0f;
+        const float rimEase = 1.0f - std::exp(-kRimEaseRate * labelDt);
+        for (const auto& [id, target] : rimTargets) {
+            auto& offset = s_rimOffsets[id];  // A new arrival starts at 0: its true bearing
+            offset += (target - offset) * rimEase;
+        }
+        if (settings->rimMarkerLog) {
+            static float nextSpacingLog = 0.0f;
+            const float now = static_cast<float>(ImGui::GetTime());
+            if (now >= nextSpacingLog) {
+                nextSpacingLog = now + 5.0f;
+                float maxOffset = 0.0f;
+                for (const auto& [id, offset] : s_rimOffsets) maxOffset = (std::max)(maxOffset, std::abs(offset));
+                logger::info("RimMarkers: spacing onRim={} maxOffsetDeg={:.1f}", rimSlotCount, maxOffset * 57.29578f);
+            }
+        }
 
         const auto drawRimMarker = [&](const RimMarkerSource::Entry& e) {
             const float dist = std::hypot(e.position.x - f.playerPos.x, e.position.y - f.playerPos.y);
@@ -1834,9 +2153,31 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
             if (alpha <= 0.0f) return;
             const ImVec2 rp = WorldToGlance(e.position, f.playerPos, glanceScale, glanceRotation);
             const ImVec2 projected(center.x + rp.x, center.y + rp.y);
-            const ImVec2 drawPos = boundary.Contains(projected)
+            ImVec2 drawPos = boundary.Contains(projected)
                 ? projected
                 : boundary.ClampFromCenter(projected, kGlanceRimMarkerInset);
+            float drawnOffset = 0.0f;
+            if (const auto it = s_rimOffsets.find(e.formID); it != s_rimOffsets.end()) {
+                drawPos = boundary.RayIntersection(std::atan2(rp.y, rp.x) + it->second, kGlanceRimMarkerInset);
+                drawnOffset = it->second;
+            }
+            // Full inside the view cone, faintest behind. Never culled: hiding the compass relies on it.
+            // Weighted in over the disc's outer 20% so markers reaching the rim do not pop.
+            constexpr float kSideEnd = 2.0943951f;  // 120 deg
+            constexpr float kSideScale = 0.75f;
+            constexpr float kSideAlpha = 0.5f;
+            constexpr float kRearAlpha = 0.25f;
+            const float viewOffset = std::abs(std::remainder(
+                std::atan2(e.position.x - f.playerPos.x, e.position.y - f.playerPos.y) + drawnOffset - f.cameraAngle,
+                6.2831853f));
+            const float sideT = std::clamp((viewOffset - kViewConeHalf) / (kSideEnd - kViewConeHalf), 0.0f, 1.0f);
+            const float rearT = std::clamp((viewOffset - kSideEnd) / (3.1415927f - kSideEnd), 0.0f, 1.0f);
+            const float lensAlpha = 1.0f + (kSideAlpha - 1.0f) * sideT + (kRearAlpha - kSideAlpha) * rearT;
+            const float lensScale = 1.0f + (kSideScale - 1.0f) * sideT;
+            const float rimWeight = std::clamp((std::hypot(rp.x, rp.y) / kGlanceRadius - 0.8f) / 0.2f, 0.0f, 1.0f);
+            const float lens = rimWeight * (1.0f - focusT);
+            const float drawAlpha = alpha * (1.0f + (lensAlpha - 1.0f) * lens);
+            const float drawScale = pinScale * (1.0f + (lensScale - 1.0f) * lens);
             auto* icon = RimMarkerIcon(e);
             if (!icon && !e.logLabel.empty()) {
                 static std::unordered_set<RE::FormID> logged;
@@ -1844,8 +2185,9 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
                     logger::info("RimMarkers: no icon {} packPath='{}'", e.logLabel, e.packPath);
                 }
             }
-            MapDraw::DrawPin(dl, drawPos.x, drawPos.y, focusT, 1u, icon, pinScale,
-                             IM_COL32(255, 255, 255, 0), alpha, UIScale::Master());
+            MapDraw::DrawPin(dl, drawPos.x, drawPos.y, focusT, 1u, icon, drawScale,
+                             IM_COL32(255, 255, 255, 0), drawAlpha, UIScale::Master(),
+                             /*customPin=*/false);
         };
         for (const auto& e : rim->entries) {
             if (!rimLook || e.formID != rimLook->formID) drawRimMarker(e);
@@ -1946,7 +2288,7 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
         }
     }
 
-    if (settings->navGlanceShowLocation) {
+    if (settings->navGlanceShowLabel) {
         s_radarLabel.Update(labelId, labelName, std::move(labelText), std::move(labelSubtitle), labelIcon, labelDimmed, labelDt);
     }
     if (followCamera && look && !focusDistance.empty()) {
@@ -1970,7 +2312,7 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
                     FadeCol(MapTheme::kHeaderText, distAlpha), focusDistance.c_str());
     }
 
-    if (settings->navGlanceShowLocation && !s_radarLabel.text.empty()) {
+    if (settings->navGlanceShowLabel && !s_radarLabel.text.empty()) {
         ImFont* titleFont = FontManager::GetSingleton()->GetHeadingFont();
         if (!titleFont) titleFont = ImGui::GetFont();
         const float titleSize = titleFont->FontSize * UIScale::Font() *
@@ -1978,9 +2320,9 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
         const char* title = s_radarLabel.text.c_str();
         const ImVec2 tsz = titleFont->CalcTextSizeA(titleSize, FLT_MAX, 0.0f, title);
         const float gap = UIScale::Px(4.0f);
-        const float labelRing = settings->navGlanceShowCardinals
+        const float labelRing = (std::max)(rimIconRing, settings->navGlanceShowCardinals
             ? cardinalRing + UIScale::Px(static_cast<float>((std::max)(0, -settings->navGlanceCardinalOffset)))
-            : 0.0f;
+            : 0.0f);
         const char* subtitle = s_radarLabel.subtitle.c_str();
         const float subtitleSize = titleSize * 0.85f;
         const ImVec2 ssz = s_radarLabel.subtitle.empty()
@@ -1991,15 +2333,23 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
             ty = center.y - halfSize - labelRing - gap - tsz.y - ssz.y;
         }
         const float labelAlpha = a_alpha * s_radarLabel.alpha;
-        const float iconSize = s_radarLabel.icon ? tsz.y : 0.0f;
+        // Floor at label scale 0.85: the quest icon art breaks up below it.
+        constexpr float kMinIconLabelScale = 0.85f;
+        const float iconSize = s_radarLabel.icon
+            ? (std::max)(tsz.y, titleFont->FontSize * UIScale::Font() * kMinIconLabelScale)
+            : 0.0f;
         const float iconGap = s_radarLabel.icon ? UIScale::Px(5.0f) : 0.0f;
         const float totalW = iconSize + iconGap + tsz.x;
         const float left = std::clamp(center.x - totalW * 0.5f, 0.0f, (std::max)(0.0f, disp.x - totalW));
         const float tx = left + iconSize + iconGap;
         if (s_radarLabel.icon) {
-            MapDraw::DrawPin(dl, left + iconSize * 0.5f, ty + tsz.y * 0.5f, 0.0f, 1u, s_radarLabel.icon,
-                             iconSize / 32.0f, IM_COL32(255, 255, 255, 0),
-                             labelAlpha * (s_radarLabel.dimmed ? 0.5f : 1.0f), UIScale::Master());
+            // Snapped so fractional text heights do not drop thin edges of the art.
+            const auto iconRect = SnapIconRect(left + iconSize * 0.5f, ty + tsz.y * 0.5f, iconSize);
+            MapDraw::DrawPin(dl, (iconRect.min.x + iconRect.max.x) * 0.5f, (iconRect.min.y + iconRect.max.y) * 0.5f,
+                             0.0f, 1u, s_radarLabel.icon,
+                             (iconRect.max.x - iconRect.min.x) / 32.0f, IM_COL32(255, 255, 255, 0),
+                             labelAlpha * (s_radarLabel.dimmed ? 0.5f : 1.0f), UIScale::Master(),
+                             /*customPin=*/false);
         }
         dl->AddText(titleFont, titleSize, ImVec2(tx + UIScale::Px(1.0f), ty + UIScale::Px(1.0f)),
                     FadeCol(IM_COL32(0, 0, 0, 200), labelAlpha), title);

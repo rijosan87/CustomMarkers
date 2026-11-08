@@ -107,7 +107,7 @@ namespace LootBeamDesigns {
                                        iconAt.y + iconHalf),
                                 a_context.preserveIconColor
                                     ? MapDraw::WithAlpha(IM_COL32_WHITE, alpha) : iconTint,
-                                -1, a_context.preserveIconColor ? 0 : -1);
+                                true, !a_context.preserveIconColor);
         }
     }
 }

@@ -218,9 +218,15 @@ void Settings::Load() {
     navGlanceShape = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlanceShape", navGlanceShape)), 0, 1);
     navGlanceOrientation = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlanceOrientation", navGlanceOrientation)), 0, 1);
     navGlanceShowCardinals = (ini.GetLongValue("NavigationOverlay", "GlanceShowCardinals", navGlanceShowCardinals ? 1L : 0L) != 0);
-    navGlanceCardinalOffset = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlanceCardinalOffset", navGlanceCardinalOffset)), -20, 40);
-    navGlanceRimIconOffset = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlanceRimIconOffset", navGlanceRimIconOffset)), -20, 40);
-    navGlanceShowLocation = (ini.GetLongValue("NavigationOverlay", "GlanceShowLocation", navGlanceShowLocation ? 1L : 0L) != 0);
+    navGlanceCardinalOffset = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlanceCardinalOffset", navGlanceCardinalOffset)), -40, 40);
+    navGlanceRimIconOffset = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlanceRimIconOffset", navGlanceRimIconOffset)), -40, 40);
+    ReadColor4Hex(ini, "NavigationOverlay", "GlanceBorderColor", nullptr,
+                  navGlanceBorderR, navGlanceBorderG, navGlanceBorderB, navGlanceBorderA);
+    navGlanceRimBand = (ini.GetLongValue("NavigationOverlay", "GlanceRimBand", navGlanceRimBand ? 1L : 0L) != 0);
+    ReadColor4Hex(ini, "NavigationOverlay", "GlanceRimBandColor", nullptr,
+                  navGlanceRimBandR, navGlanceRimBandG, navGlanceRimBandB, navGlanceRimBandA);
+    navGlanceHostileTrackOffset = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "GlanceHostileTrackOffset", navGlanceHostileTrackOffset)), -40, 40);
+    navGlanceShowLabel = (ini.GetLongValue("NavigationOverlay", "GlanceShowLabel", navGlanceShowLabel ? 1L : 0L) != 0);
     navGlanceLabelScale = std::clamp(static_cast<float>(ini.GetDoubleValue("NavigationOverlay", "GlanceLabelScale", navGlanceLabelScale)), 0.5f, 3.0f);
     navGlanceLabelShowDistance = (ini.GetLongValue("NavigationOverlay", "GlanceLabelShowDistance", navGlanceLabelShowDistance ? 1L : 0L) != 0);
     navGlanceLabelCombatEnemy = (ini.GetLongValue("NavigationOverlay", "GlanceLabelCombatEnemy", navGlanceLabelCombatEnemy ? 1L : 0L) != 0);
@@ -339,6 +345,9 @@ void Settings::Load() {
     navActorProximityUnits = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "ActorProximityUnits", static_cast<long>(navActorProximityUnits))), 200.0f, 4000.0f);
     navActorHostilesOnRim = (ini.GetLongValue("NavigationOverlay", "ActorHostilesOnRim", navActorHostilesOnRim ? 1L : 0L) != 0);
     navActorHostileRangeUnits = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "ActorHostileRangeUnits", static_cast<long>(navActorHostileRangeUnits))), 200.0f, 8000.0f);
+    navActorHostileArcs = (ini.GetLongValue("NavigationOverlay", "ActorHostileArcs", navActorHostileArcs ? 1L : 0L) != 0);
+    navActorHostileArcMergeAngle = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "ActorHostileArcMergeAngle", navActorHostileArcMergeAngle)), 5, 45);
+    navActorHostileArcMinEnemies = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "ActorHostileArcMinEnemies", navActorHostileArcMinEnemies)), 2, 10);
 
     // MarkerRange is stored in the INI in METERS; navMarkerRange holds units.
     {
@@ -374,6 +383,7 @@ void Settings::Load() {
     navBeaconEdgeIndicator = (ini.GetLongValue("NavigationOverlay", "BeaconEdgeIndicator", navBeaconEdgeIndicator ? 1L : 0L) != 0);
     navBeaconShowTitle = (ini.GetLongValue("NavigationOverlay", "BeaconShowTitle", navBeaconShowTitle ? 1L : 0L) != 0);
     navBeaconShowIcon = (ini.GetLongValue("NavigationOverlay", "BeaconShowIcon", navBeaconShowIcon ? 1L : 0L) != 0);
+    navBeaconStyle = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "BeaconStyle", navBeaconStyle)), 0, 2);
     lootBeamRangeUnits = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "LootBeamRangeUnits", static_cast<long>(lootBeamRangeUnits))), 200.0f, 6000.0f);
     lootBeamZBandUnits = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "LootBeamZBandUnits", static_cast<long>(lootBeamZBandUnits))), 50.0f, 2000.0f);
     lootBeamRequireLOS = (ini.GetLongValue("NavigationOverlay", "LootBeamRequireLOS", lootBeamRequireLOS ? 1L : 0L) != 0);
@@ -456,14 +466,16 @@ void Settings::Load() {
 
     markerIconScale = std::clamp(static_cast<float>(ini.GetLongValue("Markers", "IconScale", static_cast<long>(markerIconScale * 100.0f + 0.5f))) / 100.0f, 0.5f, 2.0f);
     ReadColor4Hex(ini, "Markers", "PinTint", "PinTint", pinTintR, pinTintG, pinTintB, pinTintA);
+    // Only an older INI inherits below; a fresh install keeps each setting's own default.
+    const bool legacyIconFx = ini.GetValue("Markers", "IconFx3D") != nullptr;
     iconFx3D = (ini.GetLongValue("Markers", "IconFx3D", iconFx3D ? 1L : 0L) != 0);
     // Older INIs had one switch for both passes. Preserve that choice until
     // Shadow is saved independently.
-    iconShadow = (ini.GetLongValue("Markers", "IconShadow", iconFx3D ? 1L : 0L) != 0);
+    iconShadow = (ini.GetLongValue("Markers", "IconShadow", (legacyIconFx ? iconFx3D : iconShadow) ? 1L : 0L) != 0);
     // Existing INIs inherit their icon-effect choices once. Saving writes
-    // independent entity keys; later changes to Appearance stay map-specific.
-    navEntityIcon3D = (ini.GetLongValue("NavigationOverlay", "EntityIcon3D", iconFx3D ? 1L : 0L) != 0);
-    navEntityIconShadow = (ini.GetLongValue("NavigationOverlay", "EntityIconShadow", iconShadow ? 1L : 0L) != 0);
+    // independent entity keys; later changes to the pin look stay pin-specific.
+    navEntityIcon3D = (ini.GetLongValue("NavigationOverlay", "EntityIcon3D", (legacyIconFx ? iconFx3D : navEntityIcon3D) ? 1L : 0L) != 0);
+    navEntityIconShadow = (ini.GetLongValue("NavigationOverlay", "EntityIconShadow", (legacyIconFx ? iconShadow : navEntityIconShadow) ? 1L : 0L) != 0);
     enableBadges = (ini.GetLongValue("Markers", "EnableBadges", enableBadges ? 1L : 0L) != 0);
     favBadgeSize = std::clamp(static_cast<float>(ini.GetLongValue("Markers", "FavSize", static_cast<long>(favBadgeSize * 100.0f + 0.5f))) / 100.0f, 1.0f, 12.0f);
     ReadColor4Hex(ini, "Markers", "FavColor", "FavColor", favBadgeColorR, favBadgeColorG, favBadgeColorB, favBadgeColorA);
@@ -592,7 +604,13 @@ void Settings::Save() {
     ini.SetLongValue("NavigationOverlay", "GlanceShowCardinals", navGlanceShowCardinals ? 1L : 0L);
     ini.SetLongValue("NavigationOverlay", "GlanceCardinalOffset", navGlanceCardinalOffset);
     ini.SetLongValue("NavigationOverlay", "GlanceRimIconOffset", navGlanceRimIconOffset);
-    ini.SetLongValue("NavigationOverlay", "GlanceShowLocation", navGlanceShowLocation ? 1L : 0L);
+    WriteColor4Hex(ini, "NavigationOverlay", "GlanceBorderColor",
+                   navGlanceBorderR, navGlanceBorderG, navGlanceBorderB, navGlanceBorderA);
+    ini.SetLongValue("NavigationOverlay", "GlanceRimBand", navGlanceRimBand ? 1L : 0L);
+    WriteColor4Hex(ini, "NavigationOverlay", "GlanceRimBandColor",
+                   navGlanceRimBandR, navGlanceRimBandG, navGlanceRimBandB, navGlanceRimBandA);
+    ini.SetLongValue("NavigationOverlay", "GlanceHostileTrackOffset", navGlanceHostileTrackOffset);
+    ini.SetLongValue("NavigationOverlay", "GlanceShowLabel", navGlanceShowLabel ? 1L : 0L);
     ini.SetDoubleValue("NavigationOverlay", "GlanceLabelScale", navGlanceLabelScale);
     ini.SetLongValue("NavigationOverlay", "GlanceLabelShowDistance", navGlanceLabelShowDistance ? 1L : 0L);
     ini.SetLongValue("NavigationOverlay", "GlanceLabelCombatEnemy", navGlanceLabelCombatEnemy ? 1L : 0L);
@@ -700,6 +718,9 @@ void Settings::Save() {
     ini.SetLongValue("NavigationOverlay", "ActorProximityUnits", static_cast<long>(navActorProximityUnits));
     ini.SetLongValue("NavigationOverlay", "ActorHostilesOnRim", navActorHostilesOnRim ? 1L : 0L);
     ini.SetLongValue("NavigationOverlay", "ActorHostileRangeUnits", static_cast<long>(navActorHostileRangeUnits));
+    ini.SetLongValue("NavigationOverlay", "ActorHostileArcs", navActorHostileArcs ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "ActorHostileArcMergeAngle", navActorHostileArcMergeAngle);
+    ini.SetLongValue("NavigationOverlay", "ActorHostileArcMinEnemies", navActorHostileArcMinEnemies);
 
     // Written in METERS (navMarkerRange is units internally).
     ini.SetLongValue("NavigationOverlay", "MarkerRange", static_cast<long>(navMarkerRange / Settings::kUnitsPerMeter));
@@ -725,6 +746,7 @@ void Settings::Save() {
     ini.SetLongValue("NavigationOverlay", "BeaconEdgeIndicator", navBeaconEdgeIndicator ? 1L : 0L);
     ini.SetLongValue("NavigationOverlay", "BeaconShowTitle", navBeaconShowTitle ? 1L : 0L);
     ini.SetLongValue("NavigationOverlay", "BeaconShowIcon", navBeaconShowIcon ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "BeaconStyle", navBeaconStyle);
     ini.SetLongValue("NavigationOverlay", "LootBeamRangeUnits", static_cast<long>(lootBeamRangeUnits));
     ini.SetLongValue("NavigationOverlay", "LootBeamZBandUnits", static_cast<long>(lootBeamZBandUnits));
     ini.SetLongValue("NavigationOverlay", "LootBeamRequireLOS", lootBeamRequireLOS ? 1L : 0L);

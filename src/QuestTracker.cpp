@@ -101,6 +101,23 @@ namespace {
         return resolved && resolved[0] ? resolved : raw;
     }
 
+    // Titles can carry alias tokens too, e.g. "Ingredients for <alias=questGiverAlias>".
+    std::string FormatQuestName(const char* a_name, const RE::TESQuest* a_quest)
+    {
+        if (!std::strchr(a_name, '<')) {
+            return a_name;
+        }
+
+        using ParseString_t = void(*)(RE::BSString*, const RE::TESQuest*, std::uint32_t);
+        static REL::Relocation<ParseString_t> parseString{ REL::RelocationID(23429, 23897) };
+
+        RE::BSString formatted{ a_name };
+        parseString(&formatted, a_quest, a_quest->currentInstanceID);
+
+        const char* resolved = formatted.c_str();
+        return resolved && resolved[0] ? resolved : a_name;
+    }
+
     // Identity tokens for this game-task collection only. Never publish target
     // pointers to Present or hold the engine spinlock across reference lookup.
     std::vector<RE::TESQuestTarget*> CopyEligibleTargets(
@@ -449,7 +466,7 @@ namespace {
 
         ActiveQuestRow row;
         row.questID   = quest->GetFormID();
-        row.name      = qname;
+        row.name      = FormatQuestName(qname, quest);
         row.questType = static_cast<std::int32_t>(quest->GetType());
 
         RE::BGSQuestObjective* firstObj = nullptr;

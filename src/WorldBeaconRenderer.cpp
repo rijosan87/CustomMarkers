@@ -107,6 +107,105 @@ namespace {
         }
     }
 
+    // Glowing column for Gold and Blue, same alpha profile as the wisp.
+    // Stateless sparks, so removing a beacon needs no cleanup.
+    template <typename AlphaAtFn>
+    void DrawDestinationPillar(ImDrawList* a_dl, const ImVec2& a_base, const ImVec2& a_tip,
+                               float a_baseWidth, float a_tipWidth,
+                               ImU32 a_core, ImU32 a_glow, float a_alpha,
+                               float a_timeSec, std::uint32_t a_seed,
+                               float a_flareAlpha, AlphaAtFn a_alphaAt) {
+        constexpr int kRows = 24;
+        constexpr int kRailCount = 7;
+        constexpr float kRails[kRailCount] = { -2.2f, -1.0f, -0.28f, 0.0f, 0.28f, 1.0f, 2.2f };
+        constexpr float kTwoPi = 6.2831853f;
+        const float dx = a_tip.x - a_base.x;
+        const float dy = a_tip.y - a_base.y;
+        const float length = std::hypot(dx, dy);
+        if (!a_dl || !std::isfinite(length) || length < 1.0f) return;
+        const float nx = -dy / length;
+        const float ny = dx / length;
+        const ImVec2 uv = ImGui::GetDrawListSharedData()->TexUvWhitePixel;
+        // Per-marker phase keeps two destinations from pulsing in step.
+        const float seedPhase = static_cast<float>(a_seed % 97u) * 0.37f;
+
+        a_dl->PrimReserve((kRows - 1) * (kRailCount - 1) * 6, kRows * kRailCount);
+        const unsigned int first = a_dl->_VtxCurrentIdx;
+        for (int row = 0; row < kRows; ++row) {
+            const float f = static_cast<float>(row) / static_cast<float>(kRows - 1);
+            const ImVec2 at(a_base.x + dx * f, a_base.y + dy * f);
+            const float width = a_baseWidth + (a_tipWidth - a_baseWidth) * f;
+            const float shimmer = 0.88f + 0.12f * std::sin(f * 9.0f - a_timeSec * 1.6f + seedPhase);
+            const float alpha = std::clamp(a_alpha * a_alphaAt(f) * shimmer, 0.0f, 1.0f);
+            const ImU32 colors[kRailCount] = {
+                MapDraw::WithAlpha(a_glow, 0.0f),
+                MapDraw::WithAlpha(a_glow, 0.16f * alpha),
+                MapDraw::WithAlpha(a_glow, 0.55f * alpha),
+                MapDraw::WithAlpha(a_core, 0.95f * alpha),
+                MapDraw::WithAlpha(a_glow, 0.55f * alpha),
+                MapDraw::WithAlpha(a_glow, 0.16f * alpha),
+                MapDraw::WithAlpha(a_glow, 0.0f)
+            };
+            for (int rail = 0; rail < kRailCount; ++rail) {
+                const float across = kRails[rail] * width;
+                a_dl->PrimWriteVtx(ImVec2(at.x + nx * across, at.y + ny * across), uv, colors[rail]);
+            }
+        }
+        for (int row = 0; row < kRows - 1; ++row) {
+            const unsigned int lower = first + row * kRailCount;
+            const unsigned int upper = lower + kRailCount;
+            for (int rail = 0; rail < kRailCount - 1; ++rail) {
+                a_dl->PrimWriteIdx(static_cast<ImDrawIdx>(lower + rail));
+                a_dl->PrimWriteIdx(static_cast<ImDrawIdx>(lower + rail + 1));
+                a_dl->PrimWriteIdx(static_cast<ImDrawIdx>(upper + rail + 1));
+                a_dl->PrimWriteIdx(static_cast<ImDrawIdx>(lower + rail));
+                a_dl->PrimWriteIdx(static_cast<ImDrawIdx>(upper + rail + 1));
+                a_dl->PrimWriteIdx(static_cast<ImDrawIdx>(upper + rail));
+            }
+        }
+
+        // Ground flare: without it the faded foot makes the pillar look like it hovers.
+        if (a_flareAlpha > 0.0f) {
+            constexpr int kFanSegments = 20;
+            const float rx = a_baseWidth * 3.5f;
+            const float ry = a_baseWidth * 0.9f;
+            const ImU32 centerCol = MapDraw::WithAlpha(a_core, 0.75f * a_flareAlpha);
+            const ImU32 rimCol = MapDraw::WithAlpha(a_glow, 0.0f);
+            a_dl->PrimReserve(kFanSegments * 3, kFanSegments + 1);
+            const unsigned int center = a_dl->_VtxCurrentIdx;
+            a_dl->PrimWriteVtx(a_base, uv, centerCol);
+            for (int i = 0; i < kFanSegments; ++i) {
+                const float angle = kTwoPi * static_cast<float>(i) / static_cast<float>(kFanSegments);
+                a_dl->PrimWriteVtx(ImVec2(a_base.x + std::cos(angle) * rx,
+                                         a_base.y + std::sin(angle) * ry), uv, rimCol);
+                a_dl->PrimWriteIdx(static_cast<ImDrawIdx>(center));
+                a_dl->PrimWriteIdx(static_cast<ImDrawIdx>(center + 1 + i));
+                a_dl->PrimWriteIdx(static_cast<ImDrawIdx>(center + 1 + (i + 1) % kFanSegments));
+            }
+        }
+
+        // Spark count follows on-screen length, capped at 32.
+        const int sparkCount = std::clamp(static_cast<int>(length / UIScale::Px(14.0f)), 4, 32);
+        for (int i = 0; i < sparkCount; ++i) {
+            // Golden-ratio spacing spreads sparks evenly without a random generator.
+            const float h = std::fmod(static_cast<float>(i) * 0.61803399f + seedPhase, 1.0f);
+            const float period = 4.0f + 3.0f * h;
+            const float cycle = a_timeSec / period + h;
+            const float phase = cycle - std::floor(cycle);
+            const float f = phase * phase * 0.95f;
+            const float envelope = std::sin(phase * 3.14159265f);
+            const float twinkle = 0.65f + 0.35f * std::sin(a_timeSec * (3.0f + 4.0f * h) + h * kTwoPi);
+            const float sparkAlpha = std::clamp(a_alpha * a_alphaAt(f) * envelope * twinkle, 0.0f, 1.0f);
+            if (sparkAlpha <= 0.01f) continue;
+            const float width = a_baseWidth + (a_tipWidth - a_baseWidth) * f;
+            const float side = std::sin(h * 40.0f + phase * 5.0f) * width * 1.9f;
+            const ImVec2 at(a_base.x + dx * f + nx * side, a_base.y + dy * f + ny * side);
+            const float size = UIScale::Px(0.7f + 0.8f * h);
+            a_dl->AddCircleFilled(at, size * 2.4f, MapDraw::WithAlpha(a_glow, 0.25f * sparkAlpha), 8);
+            a_dl->AddCircleFilled(at, size, MapDraw::WithAlpha(a_core, sparkAlpha), 6);
+        }
+    }
+
     constexpr float kGroundProbeUp   = 8192.0f;
     constexpr float kGroundProbeDown = 32768.0f;
 
@@ -635,9 +734,11 @@ void WorldBeaconRenderer::Draw() {
                 perfLog ? &perfFrame : nullptr);
 
             // Destination palette (Cyan / Sky-Blue luminous hierarchy)
-            constexpr ImU32 coreCol = IM_COL32(215, 240, 255, 255);
-            constexpr ImU32 glowCol = IM_COL32(110, 200, 255, 255);
-            constexpr ImU32 haloCol = IM_COL32( 50, 140, 255, 255);
+            // Gold recolors the badge too, so the pin does not clash with a gold beam.
+            const bool goldStyle = settings->navBeaconStyle == 1;
+            const ImU32 coreCol = goldStyle ? IM_COL32(255, 244, 205, 255) : IM_COL32(215, 240, 255, 255);
+            const ImU32 glowCol = goldStyle ? IM_COL32(255, 190,  85, 255) : IM_COL32(110, 200, 255, 255);
+            const ImU32 haloCol = goldStyle ? IM_COL32(215, 130,  35, 255) : IM_COL32( 50, 140, 255, 255);
 
             const float badgeR = UIScale::Px(static_cast<float>(settings->navBeaconPinSize) * 0.75f);
             const ImVec2 iconAt = pinScr;
@@ -666,23 +767,41 @@ void WorldBeaconRenderer::Draw() {
                 ? std::clamp(bottomFadePx / fullBeamLen, 0.0f, 0.45f)
                 : 0.0f;
 
-            DrawDestinationWisp(
-                dl, beamBase, beamTip,
-                beamBaseW, beamTipW,
-                coreCol, glowCol,
-                finalAlpha,
-                [&](float f) {
-                    const float t = tBeamBase + (tPin - tBeamBase) * f;
-                    const float fadeTop = 1.0f - t;
-                    float foot = 1.0f;
-                    if (fadeSpanT > 1e-4f) {
-                        const float k = std::clamp((t - segT0) / fadeSpanT, 0.0f, 1.0f);
-                        foot = k * k;
-                    }
-                    const float occ = SampleOcclusion(occState, t);
-                    const float occMul = 1.0f - occ * (1.0f - kOccludedAlphaScale);
-                    return fadeTop * foot * occMul;
-                });
+            const auto beamAlphaAt = [&](float f) {
+                const float t = tBeamBase + (tPin - tBeamBase) * f;
+                const float fadeTop = 1.0f - t;
+                float foot = 1.0f;
+                if (fadeSpanT > 1e-4f) {
+                    const float k = std::clamp((t - segT0) / fadeSpanT, 0.0f, 1.0f);
+                    foot = k * k;
+                }
+                const float occ = SampleOcclusion(occState, t);
+                const float occMul = 1.0f - occ * (1.0f - kOccludedAlphaScale);
+                return fadeTop * foot * occMul;
+            };
+            if (settings->navBeaconStyle == 0) {
+                DrawDestinationWisp(
+                    dl, beamBase, beamTip,
+                    beamBaseW, beamTipW,
+                    coreCol, glowCol,
+                    finalAlpha,
+                    beamAlphaAt);
+            } else {
+                // No flare when the ground point is clipped off-screen.
+                const float baseOcc = SampleOcclusion(occState, tBeamBase);
+                const float flareAlpha = baseIsGround
+                    ? finalAlpha * (1.0f - baseOcc * (1.0f - kOccludedAlphaScale))
+                    : 0.0f;
+                DrawDestinationPillar(
+                    dl, beamBase, beamTip,
+                    beamBaseW, beamTipW,
+                    coreCol, glowCol,
+                    finalAlpha,
+                    static_cast<float>(std::fmod(static_cast<double>(nowSec), 3600.0)),
+                    static_cast<std::uint32_t>(m.id),
+                    flareAlpha,
+                    beamAlphaAt);
+            }
 
             const float pinOcc  = SampleOcclusion(occState, tPin);
 

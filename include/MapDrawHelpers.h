@@ -232,21 +232,17 @@ namespace MapDraw {
     inline void DrawWaypointGlyph(ImDrawList* dl, float cx, float cy, float r,
                                   std::uint32_t iconType, float hoverT, float detailScale = 1.0f);
 
+    // Default off: Shadow and 3D Icons apply to custom pins only, forwarded by DrawPin.
     inline float IconFxBoundaryExtent(float a_w, float a_h) {
         const float sc = (std::max)(1.0f, (std::max)(a_w, a_h) / 24.0f);
         return 2.0f * sc;
     }
 
-    // Pass an explicit false to force a pass off at one call site, e.g. if a
-    // future colored icon must keep its own RGB and only wants the shadow.
     inline void DrawIconFx(ImDrawList* dl, ID3D11ShaderResourceView* a_tex,
                            const ImVec2& a_min, const ImVec2& a_max,
                            ImU32 a_tint,
-                           int a_shadowOpt = -1, int a_duotoneOpt = -1) {
+                           bool a_shadow = false, bool a_duotone = false) {
         if (!dl || !a_tex) return;
-        const auto* settings = Settings::GetSingleton();
-        const bool a_shadow  = (a_shadowOpt  < 0) ? settings->iconShadow : (a_shadowOpt  != 0);
-        const bool a_duotone = (a_duotoneOpt < 0) ? settings->iconFx3D : (a_duotoneOpt != 0);
         const auto tex = reinterpret_cast<ImTextureID>(a_tex);
         const ImVec2 uv0(0, 0), uv1(1, 1);
 
@@ -382,7 +378,7 @@ namespace MapDraw {
 
     inline void DrawPanelCard(ImDrawList* dl, const ImVec2& bMin, const ImVec2& bMax,
                               ImU32 bgCol, ImU32 borderCol, float alpha = 1.0f,
-                              float geometryScale = 1.0f) {
+                              float geometryScale = 1.0f, bool allowBorder = true) {
         if (!dl || alpha <= 0.0f) return;
         const auto* s = Settings::GetSingleton();
         geometryScale = (std::max)(geometryScale, 0.01f);
@@ -445,7 +441,7 @@ namespace MapDraw {
         }
 
         // 5) Borders: dark outer contour + metallic/accent inner border.
-        if (s->bgBorder) {
+        if (s->bgBorder && allowBorder) {
             const auto bA = static_cast<std::uint8_t>(((borderCol >> IM_COL32_A_SHIFT) & 0xFF) * alpha);
             dl->AddRect(bMin, bMax, IM_COL32(6, 6, 8, static_cast<int>(220.0f * alpha)),
                         r, 0, 1.2f * geometryScale);
@@ -465,7 +461,8 @@ namespace MapDraw {
                         float scale = 1.0f,
                         ImU32 tintCol = IM_COL32(255, 255, 255, 0),
                         float overallAlpha = 1.0f,
-                        float detailScale = 1.0f) {
+                        float detailScale = 1.0f,
+                        bool customPin = true) {
         const float hoverLin = std::clamp(hoverT, 0.0f, 1.0f);
         constexpr float kBackC1 = 0.85f;         // half the standard 1.70158
         constexpr float kBackC3 = kBackC1 + 1.0f;
@@ -552,7 +549,11 @@ namespace MapDraw {
             const ImU32 baseTint = LerpColor(IM_COL32(255, 255, 255, 255), tintOpaque, tintStr);
             ImU32 imgTint = fadeAlpha(LerpColor(baseTint, IM_COL32(255, 220, 80, 255), hoverT));
 
-            DrawIconFx(dl, iconSrv, imgMin, imgMax, imgTint);
+            // Vanilla markers reuse DrawPin for hover pop but keep their plain look.
+            const auto* pinSettings = Settings::GetSingleton();
+            DrawIconFx(dl, iconSrv, imgMin, imgMax, imgTint,
+                       customPin && pinSettings->iconShadow,
+                       customPin && pinSettings->iconFx3D);
         } else {
             // Vector fallback: colored circle centered on the point, with a
             // small dark center dot marking the exact anchor.

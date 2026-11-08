@@ -174,6 +174,7 @@ private:
         std::string   name;
         std::uint16_t level = 0;
         float alpha  = 0.0f;                              // 0..1, ramped by the merge fade machine; draw multiplies by it
+        float arcBlend = 0.0f;                            // Glance only: 0 = dot, 1 = merged into a threat arc
     };
     std::unordered_map<RE::FormID, ActorGhost> _actorGhosts;
     std::chrono::steady_clock::time_point _lastGhostTick{};  // dt source for the ghost fade machine

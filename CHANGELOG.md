@@ -4,6 +4,13 @@
 
 - **Icon Tint:** Colour setting for door and loot icons on the Mini Radar and Inspect.
 - **Radar icons:** Sharper SVG icons at large sizes; cleaner edges at small sizes.
+- **Beacon Style:** Choose Wisp, Gold or Blue for destination beacons.
+
+## Fixes
+
+- **Cleared badges:** Now show on every clearable location, including Giant Camps and dungeons retyped by CoMAP.
+- **Mini Radar label icon:** No longer breaks up at small label sizes.
+- **Active Quests titles:** Titles show the real name instead of text like `<alias=questGiverAlias>`.
 
 
 # Version 1.3.2
