@@ -1585,12 +1585,36 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
         const float edgeW = UIScale::Px(1.0f);
         const float midOffset = rimBandWidth * 0.5f;
         if (square) {
-            const ImVec2 midMin(boundary.Min().x - midOffset, boundary.Min().y - midOffset);
-            const ImVec2 midMax(boundary.Max().x + midOffset, boundary.Max().y + midOffset);
             const ImVec2 outerMin(boundary.Min().x - rimBandWidth, boundary.Min().y - rimBandWidth);
             const ImVec2 outerMax(boundary.Max().x + rimBandWidth, boundary.Max().y + rimBandWidth);
-            dl->AddRect(midMin, midMax, bandCol, boundary.rounding + midOffset, 0, rimBandWidth);
-            dl->AddRect(outerMin, outerMax, bandEdge, boundary.rounding + rimBandWidth, 0, edgeW);
+            // Ring fill keeps the outer corner at the map's rounding; a thick AddRect breaks the corners.
+            const float r = boundary.rounding;
+            constexpr int kArcSegs = 8;
+            constexpr int kPts = 4 * (kArcSegs + 1);
+            ImVec2 outerPts[kPts];
+            ImVec2 innerPts[kPts];
+            const ImVec2 inMin = boundary.Min();
+            const ImVec2 inMax = boundary.Max();
+            const ImVec2 outC[4] = { { outerMin.x + r, outerMin.y + r }, { outerMax.x - r, outerMin.y + r },
+                                     { outerMax.x - r, outerMax.y - r }, { outerMin.x + r, outerMax.y - r } };
+            const ImVec2 inC[4] = { { inMin.x + r, inMin.y + r }, { inMax.x - r, inMin.y + r },
+                                    { inMax.x - r, inMax.y - r }, { inMin.x + r, inMax.y - r } };
+            const float startAng[4] = { IM_PI, 1.5f * IM_PI, 0.0f, 0.5f * IM_PI };
+            for (int c = 0; c < 4; ++c) {
+                for (int s = 0; s <= kArcSegs; ++s) {
+                    const float a = startAng[c] + 0.5f * IM_PI * static_cast<float>(s) / kArcSegs;
+                    const ImVec2 d(std::cos(a) * r, std::sin(a) * r);
+                    outerPts[c * (kArcSegs + 1) + s] = ImVec2(outC[c].x + d.x, outC[c].y + d.y);
+                    innerPts[c * (kArcSegs + 1) + s] = ImVec2(inC[c].x + d.x, inC[c].y + d.y);
+                }
+            }
+            const ImVec2 uv = dl->_Data->TexUvWhitePixel;
+            dl->PrimReserve(kPts * 6, kPts * 4);
+            for (int i = 0; i < kPts; ++i) {
+                const int j = (i + 1) % kPts;
+                dl->PrimQuadUV(outerPts[i], outerPts[j], innerPts[j], innerPts[i], uv, uv, uv, uv, bandCol);
+            }
+            dl->AddRect(outerMin, outerMax, bandEdge, r, 0, edgeW);
         } else {
             dl->AddCircle(center, halfSize + midOffset, bandCol, 96, rimBandWidth);
             dl->AddCircle(center, halfSize + rimBandWidth, bandEdge, 96, edgeW);

@@ -10,6 +10,7 @@
 - **Hover Range:** Default raised to 40 for smoother hovering on the vanilla map.
 - **Right-click menu:** The marker icon stays zoomed while its right-click menu is open.
 - **Translations:** Add Marker icon names, "No target", the Min Gold Value slider and the List panel fallback name can now be translated.
+- **Mini Radar rim:** The square radar's rim corners now match the map's rounding instead of growing with the band.
 
 # Version 1.3.3
 
