@@ -519,6 +519,7 @@ namespace SettingsMenu {
     }
 
     static void PanelMap(Settings* settings) {
+        ImGui::Checkbox(LocalizationManager::Get("Settings.ShareDestination").c_str(), &settings->navShareDestination);
         if (ImGui::CollapsingHeader(LocalizationManager::Get("Settings.ListPanelHeader").c_str())) {
             ImGui::Indent();
             ImGui::SliderInt(LocalizationManager::Get("Settings.Width").c_str(), &settings->listPanelWidth, 200, 600);

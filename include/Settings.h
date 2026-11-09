@@ -385,6 +385,7 @@ public:
     bool navRimMarkersHideInCombat = true;
     bool navHideCompass = false;
     bool navHideCNOQuestList = false;
+    bool navShareDestination = false;
     float navRimMarkerRange = 21000.0f;
     std::int32_t navMaxRimMarkers = 15;
     bool navRimShowUndiscovered = false;

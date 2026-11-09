@@ -12,6 +12,7 @@
 #include "ImGui/Renderer.h"
 #include "MarkerManager.h"
 #include "PlaceMarkerHook.h"
+#include "DestinationMirror.h"
 #include "MarkerClickHook.h"
 #include "LocalMapClickHook.h"
 #include "MapHoverHook.h"
@@ -360,6 +361,7 @@ void SKSEMessageListener(SKSE::MessagingInterface::Message *a_msg) {
 
   case SKSE::MessagingInterface::kPostLoadGame:
     logger::info("kPostLoadGame message received");
+    DestinationMirror::RequestReconcile();
     PNGIIBridge::RequestFill();
     RimMarkerSource::Invalidate();
 
@@ -376,6 +378,7 @@ void SKSEMessageListener(SKSE::MessagingInterface::Message *a_msg) {
 
   case SKSE::MessagingInterface::kNewGame:
     logger::info("kNewGame message received");
+    DestinationMirror::RequestReconcile();
     PNGIIBridge::RequestFill();
     RimMarkerSource::Invalidate();
     QuestTracker::GetSingleton()->Reset();

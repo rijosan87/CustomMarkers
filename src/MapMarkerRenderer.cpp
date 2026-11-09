@@ -6,6 +6,7 @@
 #include "MarkerFilterHook.h"
 #include "Settings.h"
 #include "PlaceMarkerHook.h"
+#include "DestinationMirror.h"
 #include "LocalMapClickHook.h"
 #include "FontManager.h"
 #include "BackgroundManager.h"
@@ -3296,6 +3297,7 @@ void MapMarkerRenderer::DrawTerrainMenu(bool isLocalMap) {
                     PlaceMarkerHook::AllowNextPlacement();
                     using PlaceMarkerFn = void(*)(RE::MapMenu*);
                     REL::Relocation<PlaceMarkerFn> placeMarker{ RELOCATION_ID(52226, 53113) };
+                    DestinationMirror::ScopedHideHandle hide;
                     placeMarker(mm.get());
                 }
 

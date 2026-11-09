@@ -1,6 +1,7 @@
 // Filters map markers by category without triggering full menu reloads.
 
 #include "MarkerFilterHook.h"
+#include "DestinationMirror.h"
 
 #include <RE/Skyrim.h>
 #include <SKSE/SKSE.h>
@@ -341,6 +342,16 @@ namespace {
 #if CMM_FILTER_LEAK_DEBUG
         CensusMarker(a_entry);
 #endif
+        // Type 2 is vanilla's custom-destination flag.
+        if (a_entry->type == 2 && DestinationMirror::IsApplied()) {
+            static bool s_logged = false;
+            if (!s_logged) {
+                s_logged = true;
+                logger::debug("[DestMirror] hiding vanilla destination flag on world map (handle={:X})", a_entry->handle);
+            }
+            return false;
+        }
+
         if (a_entry->type == 0 && a_entry->namePtr) {
             const auto type = *reinterpret_cast<const std::uint16_t*>(a_entry->namePtr + 0x12);
             const auto mode = ResolveMode(a_entry, type);

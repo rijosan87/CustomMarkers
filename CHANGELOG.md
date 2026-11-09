@@ -1,5 +1,9 @@
 # Version 1.3.4
 
+## Features
+
+- **Auto-Travel Integration:** Optional setting lets AutoMove and AutoHorse travel to your Custom Markers destination.
+
 ## Fixes
 
 - **Map hover:** Markers are clickable right after panning or opening the vanilla map.

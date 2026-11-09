@@ -1,6 +1,7 @@
 #include "CompassHook.h"
 #include "MarkerManager.h"
 #include "HUDMarkerHook.h"
+#include "DestinationMirror.h"
 #include "Settings.h"
 
 #include <RE/Skyrim.h>
@@ -208,6 +209,7 @@ namespace {
         const bool isInterior = (world == nullptr);
 
         const auto markers = MarkerManager::GetSingleton()->GetMarkers();
+        DestinationMirror::Update(markers);
         if (markers.empty()) {
             reinterpret_cast<CompassUpdateFn>(g_trampolineAddr)(compassThis);
             HUDMarkerHook::EndPass();  // publish quest markers accumulated during the pass
@@ -288,6 +290,9 @@ namespace {
             if (anchorIdx >= g_anchorHandles.size()) break;
 
             if (!marker.isDestination && marker.iconType >= 100) continue;
+
+            // Vanilla's compass draws the shared destination.
+            if (marker.isDestination && marker.worldSpaceID != 0 && DestinationMirror::IsApplied()) continue;
 
             RE::TESObjectREFR* exitDoor = nullptr;
             if (isInterior) {

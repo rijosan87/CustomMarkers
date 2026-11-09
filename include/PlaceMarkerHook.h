@@ -9,4 +9,6 @@ namespace PlaceMarkerHook {
     void SuppressNextPlacement();
 
     void AllowNextPlacement();
+
+    bool CallOriginalSetDestination(const RE::NiPoint3& a_pos, RE::TESWorldSpace* a_worldspace);
 }

@@ -362,6 +362,7 @@ void Settings::Load() {
     navRimMarkersHideInCombat = (ini.GetLongValue("NavigationOverlay", "RimMarkersHideInCombat", navRimMarkersHideInCombat ? 1L : 0L) != 0);
     navHideCompass = (ini.GetLongValue("NavigationOverlay", "HideCompass", navHideCompass ? 1L : 0L) != 0);
     navHideCNOQuestList = (ini.GetLongValue("NavigationOverlay", "HideCNOQuestList", navHideCNOQuestList ? 1L : 0L) != 0);
+    navShareDestination = (ini.GetLongValue("NavigationOverlay", "ShareDestination", navShareDestination ? 1L : 0L) != 0);
     {
         const long defM = static_cast<long>(navRimMarkerRange / Settings::kUnitsPerMeter);
         const float meters = std::clamp(static_cast<float>(ini.GetLongValue("NavigationOverlay", "RimMarkerRange", defM)), 50.0f, 2000.0f);
@@ -730,6 +731,7 @@ void Settings::Save() {
     ini.SetLongValue("NavigationOverlay", "RimMarkersHideInCombat", navRimMarkersHideInCombat ? 1L : 0L);
     ini.SetLongValue("NavigationOverlay", "HideCompass", navHideCompass ? 1L : 0L);
     ini.SetLongValue("NavigationOverlay", "HideCNOQuestList", navHideCNOQuestList ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "ShareDestination", navShareDestination ? 1L : 0L);
     ini.SetLongValue("NavigationOverlay", "RimMarkerRange", static_cast<long>(navRimMarkerRange / Settings::kUnitsPerMeter));
     ini.SetLongValue("NavigationOverlay", "MaxRimMarkers", navMaxRimMarkers);
     ini.SetLongValue("NavigationOverlay", "RimShowUndiscovered", navRimShowUndiscovered ? 1L : 0L);

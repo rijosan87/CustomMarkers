@@ -104,6 +104,21 @@ void PlaceMarkerHook::Install() {
                  targetAddr, g_trampolineAddr);
 }
 
+bool PlaceMarkerHook::CallOriginalSetDestination(const RE::NiPoint3& a_pos, RE::TESWorldSpace* a_worldspace) {
+    // Trampoline: our detour returns early when the map is closed.
+    if (!g_trampolineAddr || !a_worldspace) {
+        return false;
+    }
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) {
+        return false;
+    }
+    RE::NiPoint3 pos = a_pos;
+    using func_t = std::uintptr_t(*)(void*, RE::NiPoint3*, RE::TESWorldSpace*);
+    reinterpret_cast<func_t>(g_trampolineAddr)(player, &pos, a_worldspace);
+    return true;
+}
+
 void PlaceMarkerHook::SuppressNextPlacement() {
     g_suppressNextPlacement = true;
 }

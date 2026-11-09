@@ -6,6 +6,7 @@
 #include "HoverImageRenderer.h"
 #include "MapLookRemapHook.h"
 #include "Settings.h"
+#include "DestinationMirror.h"
 
 #include <RE/Skyrim.h>
 #include <SKSE/SKSE.h>
@@ -213,7 +214,26 @@ namespace {
             auto base = reinterpret_cast<std::uintptr_t>(a_menu);
             *reinterpret_cast<std::int32_t*>(base + kHoveredMarkerOffset) = -1;
         }
+        DestinationMirror::ScopedHideHandle hide;
         reinterpret_cast<OnMouseDownFn>(g_onMouseDownTrampoline)(a_menu);
+    }
+
+    // World marker array: MapMenu+0x30470 data, +0x30480 size, stride 0x38, type at +0x18.
+    void UnpinVanillaDestinationFlag(RE::MapMenu* a_menu) {
+        const auto base = reinterpret_cast<std::uintptr_t>(a_menu);
+        auto* hovered = reinterpret_cast<std::int32_t*>(base + kHoveredMarkerOffset);
+        const std::int32_t idx = *hovered;
+        if (idx < 0) return;
+        const auto data = *reinterpret_cast<const std::uintptr_t*>(base + 0x30470);
+        const auto size = *reinterpret_cast<const std::uint32_t*>(base + 0x30480);
+        if (!data || static_cast<std::uint32_t>(idx) >= size) return;
+        const auto type = *reinterpret_cast<const std::uint32_t*>(data + static_cast<std::uintptr_t>(idx) * 0x38 + 0x18);
+        if (type != 2) return;
+        static std::uint32_t s_count = 0;
+        if (++s_count <= 5) {
+            logger::debug("[DestMirror] unpinned hover on hidden vanilla destination flag (idx={}, #{})", idx, s_count);
+        }
+        *hovered = -1;
     }
 
     void HookedUpdateHoveredMarker(RE::MapMenu* a_menu) {
@@ -244,6 +264,10 @@ namespace {
                    !HoverImageRenderer::IsWithinHoverRange(
                        a_menu, *reinterpret_cast<std::int32_t*>(base + kHoveredMarkerOffset))) {
             *reinterpret_cast<std::int32_t*>(base + kHoveredMarkerOffset) = -1;
+        }
+        // Its remove-confirm would clear our handle.
+        if (DestinationMirror::IsApplied()) {
+            UnpinVanillaDestinationFlag(a_menu);
         }
         HoverImageRenderer::SampleCardState(a_menu);
     }
