@@ -1071,7 +1071,8 @@ namespace SettingsMenu {
             // Min Gold Value threshold slider (0 = Off)
             ImGui::SliderInt((LocalizationManager::Get("Settings.MinGoldValue") + "##lootbeam").c_str(),
                              &settings->lootBeamMinGoldValue, 0, 5000,
-                             settings->lootBeamMinGoldValue == 0 ? "Off" : "%d g");
+                             (settings->lootBeamMinGoldValue == 0 ? LocalizationManager::Get("Settings.GoldOff")
+                                                                  : LocalizationManager::Get("Settings.GoldValueFormat")).c_str());
             ImGui::Spacing();
 
             if (ImGui::TreeNode((LocalizationManager::Get("Settings.LootTypesTree") + "##lootbeam").c_str())) {

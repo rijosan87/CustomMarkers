@@ -308,6 +308,19 @@ namespace {
         return interior ? kInteriorCategories : kWorldCategories;
     }
 
+    // Key is Picker.Pick<Name> without spaces; the Pick prefix avoids clashing with bare MarkerType keys.
+    std::string CategoryLabel(const char* english) {
+        if (!english || !*english || std::isdigit(static_cast<unsigned char>(*english))) {
+            return english ? english : "";
+        }
+        std::string key = "Picker.Pick";
+        for (const char* c = english; *c; ++c) {
+            if (*c != ' ') key += *c;
+        }
+        std::string label = LocalizationManager::Get(key);
+        return label == key ? std::string{ english } : label;
+    }
+
     // iconType -> combo index in the given table. Falls back to 0
     // (Custom Marker) if the type isn't in that table.
     int CategoryIndexForIcon(std::uint32_t iconType, bool interior) {
@@ -1319,7 +1332,7 @@ void MapMarkerRenderer::DrawListPanel() {
             if (extra->mapData) name = extra->mapData->locationName.GetFullName();
         }
         if (name.empty()) name = ref->GetName();
-        if (name.empty()) name = "Marker";
+        if (name.empty()) name = LocalizationManager::Get("ListPanel.MarkerFallback");
 
         (void)note;
         notes.push_back({ formID, name, ref->GetPosition() });
@@ -3605,16 +3618,26 @@ void MapMarkerRenderer::DrawNoteDialog() {
         // Category lists live at file scope so BeginEditMarker can reverse-map
         // iconType->index. Pick the table matching where this marker lives.
         const auto& catTbl        = CategoriesFor(_noteDialogInterior);
-        const auto* categoryNames  = catTbl.names;
         const auto* categoryValues = catTbl.values;
         const int   categoryCount  = catTbl.count;
+        // Rebuilt each frame so a language switch applies without a cache.
+        std::vector<std::string> categoryLabels;
+        std::vector<const char*> categoryNames;
+        categoryLabels.reserve(categoryCount);
+        categoryNames.reserve(categoryCount);
+        for (int i = 0; i < categoryCount; ++i) {
+            categoryLabels.push_back(CategoryLabel(catTbl.names[i]));
+        }
+        for (const auto& label : categoryLabels) {
+            categoryNames.push_back(label.c_str());
+        }
 
         // Vanilla markers own their icon and aren't our destinations, so the
         // category grid + destination checkbox are hidden in vanilla-note mode.
         if (!vanillaMode) {
             constexpr int   kPerRow = 10;
             const float     kCellSz = 30.0f * geometryScale;
-            MapDraw::DrawCategoryGrid(categoryNames, categoryValues, categoryCount,
+            MapDraw::DrawCategoryGrid(categoryNames.data(), categoryValues, categoryCount,
                                       _selectedCategory, kPerRow, kCellSz,
                                       /*showTooltip=*/!_noteDialogInterior,
                                       geometryScale,

@@ -5,6 +5,7 @@
 #include "MenuUtils.h"
 #include "BeastForm.h"
 #include "PartySheetState.h"
+#include "LocalizationManager.h"
 #include "Settings.h"
 #include "SettingsMenu.h"
 #include "InputHandler.h"
@@ -374,7 +375,8 @@ void LookPinRenderer::Draw() {
 
     // 4. "No target" after a commit that had nothing to place on.
     if (nowSec < _noTargetMsgUntil) {
-        const char* msg = "No target";
+        const std::string msgStr = LocalizationManager::Get("Navigation.NoTarget");
+        const char* msg = msgStr.c_str();
         const ImVec2 sz = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, msg);
         const float y = labelY + fontSize + UIScale::Px(2.0f);
         dl->AddText(font, fontSize, ImVec2(centre.x - sz.x * 0.5f + shadowOffset, y + shadowOffset), shadowTint, msg);
