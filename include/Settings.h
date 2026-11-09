@@ -82,7 +82,7 @@ public:
     std::int32_t statCardAnchor  = 3;
     std::int32_t statCardOffsetX = 20;
     std::int32_t statCardOffsetY = 0;
-    std::int32_t markerHoverRange = 30;
+    std::int32_t markerHoverRange = 40;
 
     // Controls the Type, Hold, Bounty, and Cleared rows on vanilla marker hovers.
     // The marker name, note, and image remain independent.

@@ -16,6 +16,9 @@ namespace HoverImageRenderer {
 
     void OpenContextMenu();
 
+    // Marker index the vanilla right-click menu is open for, or -1.
+    std::int32_t GetOpenMenuMarkerIndex();
+
     bool IsLocalMarkerHovered();
 
     void OpenLocalContextMenu();

@@ -2,7 +2,7 @@
 # If you use CMake features from higher versions, update this to match.
 cmake_minimum_required(VERSION 3.21)
 # Set your project name. This will be the name of your SKSE .dll file.
-project(CustomMarkers VERSION 1.3.3 LANGUAGES CXX)
+project(CustomMarkers VERSION 1.3.4 LANGUAGES CXX)
 #
 # YOU DO NOT NEED TO EDIT ANYTHING BELOW HERE
 #

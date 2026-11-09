@@ -1,5 +1,7 @@
 #include "HoverImageRenderer.h"
 
+#include <atomic>
+
 #include "TextureManager.h"
 #include "MarkerManager.h"
 #include "MapMarkerRenderer.h"  // IsMapFading()
@@ -61,6 +63,7 @@ namespace {
         float            heightPx     = 0.0f;
         float            alpha01      = 0.0f;  // 0..1
         RE::FormID       formID       = 0;     // hovered marker ref FormID, 0 if unknown
+        std::int32_t     markerIdx    = -1;    // MapMenu marker array index
         std::string      name;              // resolved location name, "<ID=...>" prefix stripped
         RE::FormID       worldSpaceID = 0;  // parent worldspace
         RE::FormID       cellID       = 0;  // parent cell (for interiors)
@@ -92,6 +95,8 @@ namespace {
     // State for the right-click context menu
     bool g_openContextMenu = false;
     CardScreenRect g_contextMenuState; // Cached state for the open menu
+    // Written by Draw (render thread), read by the SetSelectedMarker detour (main thread).
+    std::atomic<std::int32_t> g_menuMarkerIdx{ -1 };
 
     struct LocalIdentity {
         RE::FormID   doorFormID = 0;
@@ -938,6 +943,7 @@ void HoverImageRenderer::SampleCardState(RE::MapMenu* a_menu) {
                         static_cast<float>(titleTopStage) * scale;
     next.haveTitle    = haveTitle;
     ResolveIdentity(a_menu, idx, next);
+    next.markerIdx = idx;
 
     if (MarkerFilterHook::IsMarkerFiltered(
             RE::TESForm::LookupByID<RE::TESObjectREFR>(next.formID), next.markerType)) {
@@ -1054,22 +1060,26 @@ void HoverImageRenderer::Draw() {
     if (!ui || !ui->IsMenuOpen(RE::MapMenu::MENU_NAME)) {
         g_openContextMenu = false;
         g_openLocalContextMenu = false;
+        g_menuMarkerIdx.store(-1);
         return;
     }
     if (MenuUtils::ShouldBlockMapOverlay()) {
         g_openContextMenu = false;
         g_openLocalContextMenu = false;
+        g_menuMarkerIdx.store(-1);
         return;
     }
 
     if (IsMapFading()) {
         g_openContextMenu = false;
         g_openLocalContextMenu = false;
+        g_menuMarkerIdx.store(-1);
         return;
     }
     if (MenuUtils::IsMapModalOpen()) {
         g_openContextMenu = false;
         g_openLocalContextMenu = false;
+        g_menuMarkerIdx.store(-1);
         return;
     }
 
@@ -1086,6 +1096,7 @@ void HoverImageRenderer::Draw() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,    ImVec2(UIScale::Px(10.0f), UIScale::Px(8.0f)));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,      ImVec2(UIScale::Px(8.0f),  UIScale::Px(6.0f)));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, UIScale::Px(1.5f));
+    std::int32_t menuIdx = -1;
     if (ImGui::BeginPopup("VanillaContextMenu")) {
         const float effectiveBodyScale = std::clamp(Settings::GetSingleton()->bodyScale, 0.5f, 3.0f) * UIScale::Font();
         ImGui::SetWindowFontScale(effectiveBodyScale);
@@ -1167,8 +1178,10 @@ void HoverImageRenderer::Draw() {
                                                        pos.x, pos.y, pos.x + size.x, pos.y + size.y,
                                                        rows, rowCount);
         }
+        menuIdx = cs.markerIdx;
         ImGui::EndPopup();
     }
+    g_menuMarkerIdx.store(menuIdx);
 
     if (g_openLocalContextMenu) {
         g_openLocalContextMenu = false;
@@ -1551,7 +1564,13 @@ void HoverImageRenderer::OpenContextMenu() {
     if (g_state.valid) {
         g_contextMenuState = g_state;
         g_openContextMenu = true;
+        // Set now so the icon never un-zooms before Draw opens the popup.
+        g_menuMarkerIdx.store(g_state.markerIdx);
     }
+}
+
+std::int32_t HoverImageRenderer::GetOpenMenuMarkerIndex() {
+    return g_menuMarkerIdx.load();
 }
 
 

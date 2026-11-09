@@ -74,9 +74,20 @@ namespace {
         auto* camera = netimmerse_cast<RE::NiCamera*>(children[0].get());
         if (!camera) return;
 
+        // The vanilla map camera keeps drifting by float noise after it stops, so
+        // compare against the last accepted matrix with a relative threshold.
+        constexpr float kMoveEpsilon = 1e-4f;
         const auto& worldToCam = camera->GetRuntimeData().worldToCam;
         const std::uint64_t now = GetTickCount64();
-        if (std::memcmp(worldToCam, g_lastWorldToCam, sizeof(g_lastWorldToCam)) != 0) {
+        float maxDelta = 0.0f;
+        for (int r = 0; r < 4; ++r) {
+            for (int c = 0; c < 4; ++c) {
+                const float ref = g_lastWorldToCam[r][c];
+                const float d = std::fabs(worldToCam[r][c] - ref) / (std::max)(1.0f, std::fabs(ref));
+                maxDelta = (std::max)(maxDelta, d);
+            }
+        }
+        if (maxDelta > kMoveEpsilon) {
             std::memcpy(g_lastWorldToCam, worldToCam, sizeof(g_lastWorldToCam));
             g_lastCameraMoveTick = now;
         }
@@ -115,10 +126,13 @@ namespace {
                 }
 
                 if (suppress && values) {
+                    // Keep the icon zoomed while its right-click menu is open.
+                    const std::int32_t menuIdx = HoverImageRenderer::GetOpenMenuMarkerIndex();
+                    const double sent = menuIdx >= 0 ? static_cast<double>(menuIdx) : -1.0;
                     for (std::uint32_t i = 0; i < count; ++i) {
                         values[i].value       = nullptr;
                         values[i].type        = 3; // kNumber
-                        values[i].numberValue = -1.0;
+                        values[i].numberValue = sent;
                     }
                 }
             }
@@ -204,6 +218,15 @@ namespace {
 
     void HookedUpdateHoveredMarker(RE::MapMenu* a_menu) {
         if (a_menu) UpdateCameraMotion(a_menu);
+        // Menu just closed: seed the hovered slot so vanilla sends a fresh
+        // SetSelectedMarker and the held zoom cannot stick.
+        static std::int32_t s_lastMenuIdx = -1;
+        const std::int32_t menuIdx = HoverImageRenderer::GetOpenMenuMarkerIndex();
+        if (a_menu && s_lastMenuIdx >= 0 && menuIdx < 0) {
+            auto base = reinterpret_cast<std::uintptr_t>(a_menu);
+            *reinterpret_cast<std::int32_t*>(base + kHoveredMarkerOffset) = s_lastMenuIdx;
+        }
+        s_lastMenuIdx = menuIdx;
         g_hoverPassMenu = a_menu;
         reinterpret_cast<UpdateHoveredMarkerFn>(g_trampolineAddr)(a_menu);
         g_hoverPassMenu = nullptr;

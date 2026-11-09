@@ -1,3 +1,11 @@
+# Version 1.3.4
+
+## Fixes
+
+- **Map hover:** Markers are clickable right after panning or opening the vanilla map.
+- **Hover Range:** Default raised to 40 for smoother hovering on the vanilla map.
+- **Right-click menu:** The marker icon stays zoomed while its right-click menu is open.
+
 # Version 1.3.3
 
 ## Features
