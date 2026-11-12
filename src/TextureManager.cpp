@@ -119,10 +119,32 @@ namespace TextureManager {
             tx = (w - docW * scale) / 2;
             ty = (h - docH * scale) / 2;
         }
-        lunasvg::Bitmap bitmap(w, h);
-        if (bitmap.isNull()) return E_FAIL;
-        bitmap.clear(0x00000000);
-        doc->render(bitmap, lunasvg::Matrix(scale, 0, 0, scale, tx, ty));
+        // Supersample and box-shrink: lunasvg anti-aliases shapes separately, leaving a fill/outline seam.
+        const int ss = kind != SvgKind::kIcon ? 1 : (iconPx <= 128 ? 4 : 2);
+        lunasvg::Bitmap hi(w * ss, h * ss);
+        if (hi.isNull()) return E_FAIL;
+        hi.clear(0x00000000);
+        doc->render(hi, lunasvg::Matrix(scale * ss, 0, 0, scale * ss, tx * ss, ty * ss));
+        lunasvg::Bitmap lo;
+        if (ss > 1) {
+            lo = lunasvg::Bitmap(w, h);
+            if (lo.isNull()) return E_FAIL;
+            const unsigned n = static_cast<unsigned>(ss * ss);
+            for (int y = 0; y < h; ++y) {
+                std::uint8_t* o = lo.data() + y * lo.stride();
+                for (int x = 0; x < w; ++x, o += 4) {
+                    unsigned acc[4] = {};
+                    for (int sy = 0; sy < ss; ++sy) {
+                        const std::uint8_t* p = hi.data() + (y * ss + sy) * hi.stride() + x * ss * 4;
+                        for (int sx = 0; sx < ss; ++sx, p += 4) {
+                            acc[0] += p[0]; acc[1] += p[1]; acc[2] += p[2]; acc[3] += p[3];
+                        }
+                    }
+                    for (int c = 0; c < 4; ++c) o[c] = static_cast<std::uint8_t>((acc[c] + n / 2) / n);
+                }
+            }
+        }
+        lunasvg::Bitmap& bitmap = ss > 1 ? lo : hi;
         // lunasvg renders premultiplied ARGB32; the PNG path and ImGui expect straight RGBA.
         bitmap.convertToRGBA();
         if (FAILED(out.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM, w, h, 1, 1))) return E_FAIL;
@@ -317,8 +339,8 @@ namespace TextureManager {
     }
 
     ID3D11ShaderResourceView* GetIconAtPixelSize(ID3D11ShaderResourceView* base, int px) {
-        // Below 32 px the mip blur hides diagonal steps better than a crisp raster.
-        if (!base || !g_Device || px < 32 || px > 128) return base;
+        // Exact-size from 8 px; above 128 the 256 mip chain is near 1:1.
+        if (!base || !g_Device || px < 8 || px > 128) return base;
         const auto src = g_SvgSourceBySrv.find(base);
         if (src == g_SvgSourceBySrv.end()) return base;
         const auto key = std::make_pair(base, px);

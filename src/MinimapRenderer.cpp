@@ -360,6 +360,38 @@ namespace {
 
     float SmoothstepLocal(float t) { return t * t * (3.0f - 2.0f * t); }
 
+    // Player arrow from Icons\player_arrow.svg; falls back to the drawn quad if missing.
+    void DrawPlayerArrow(ImDrawList* dl, ImVec2 center, float angle, float retraceT, float a_alpha) {
+        const float c = std::cos(angle);
+        const float s = std::sin(angle);
+        const ImVec2 forward(s, -c);
+        const ImVec2 right(c, s);
+        const ImU32 fill = MapDraw::LerpColor(IM_COL32(255, 255, 255, 255), MapTheme::kRetraceArrow, retraceT);
+
+        if (auto* srv = TextureManager::GetIconByName("player_arrow")) {
+            const float half = UIScale::Px(13.0f);
+            srv = TextureManager::GetIconAtPixelSize(srv, static_cast<int>(half * 2.0f));
+            auto corner = [&](float fx, float rx) {
+                return ImVec2(center.x + forward.x * fx + right.x * rx, center.y + forward.y * fx + right.y * rx);
+            };
+            dl->AddImageQuad(reinterpret_cast<ImTextureID>(srv),
+                             corner(half, -half), corner(half, half), corner(-half, half), corner(-half, -half),
+                             ImVec2(0, 0), ImVec2(1, 0), ImVec2(1, 1), ImVec2(0, 1), FadeCol(fill, a_alpha));
+            return;
+        }
+
+        const float arrF12 = UIScale::Px(12.0f);
+        const float arrF10 = UIScale::Px(10.0f);
+        const float arrR8  = UIScale::Px(8.0f);
+        const float arrF4  = UIScale::Px(4.0f);
+        ImVec2 p1(center.x + forward.x * arrF12, center.y + forward.y * arrF12);
+        ImVec2 p2(center.x - forward.x * arrF10 - right.x * arrR8, center.y - forward.y * arrF10 - right.y * arrR8);
+        ImVec2 p3(center.x - forward.x * arrF4, center.y - forward.y * arrF4);
+        ImVec2 p4(center.x - forward.x * arrF10 + right.x * arrR8, center.y - forward.y * arrF10 + right.y * arrR8);
+        dl->AddQuadFilled(p1, p2, p3, p4, FadeCol(fill, a_alpha));
+        dl->AddQuad(p1, p2, p3, p4, FadeCol(IM_COL32(0, 0, 0, 255), a_alpha), UIScale::Px(1.5f));
+    }
+
     // 25 deg, also the look-at selection angle, so what is named matches what is drawn.
     constexpr float kViewConeHalf = 0.4363323f; // 25 deg
     // a_alpha: crossfade multiplier, default 1.0 so any other caller is unaffected.
@@ -2269,27 +2301,8 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
     const float arrowAngle = followCamera
         ? f.playerAngle - f.cameraAngle
         : f.playerAngle - glanceNorthRot;
-    float c = std::cos(arrowAngle);
-    float s = std::sin(arrowAngle);
-
-    ImVec2 forward(s, -c);
-    ImVec2 right(c, s);
-
-    const float arrF12 = UIScale::Px(12.0f);
-    const float arrF10 = UIScale::Px(10.0f);
-    const float arrR8  = UIScale::Px(8.0f);
-    const float arrF4  = UIScale::Px(4.0f);
-
-    ImVec2 p1(center.x + forward.x * arrF12, center.y + forward.y * arrF12);
-    ImVec2 p2(center.x - forward.x * arrF10 - right.x * arrR8, center.y - forward.y * arrF10 - right.y * arrR8);
-    ImVec2 p3(center.x - forward.x * arrF4, center.y - forward.y * arrF4);
-    ImVec2 p4(center.x - forward.x * arrF10 + right.x * arrR8, center.y - forward.y * arrF10 + right.y * arrR8);
-
     // Yellow while retracing already-tracked ground (_retraceFade ramped in Draw()).
-    const float retraceT = SmoothstepLocal(_retraceFade);
-    const ImU32 arrowFill = MapDraw::LerpColor(IM_COL32(255, 255, 255, 255), MapTheme::kRetraceArrow, retraceT);
-    dl->AddQuadFilled(p1, p2, p3, p4, FadeCol(arrowFill, a_alpha));
-    dl->AddQuad(p1, p2, p3, p4, FadeCol(IM_COL32(0, 0, 0, 255), a_alpha), UIScale::Px(1.5f));
+    DrawPlayerArrow(dl, center, arrowAngle, SmoothstepLocal(_retraceFade), a_alpha);
 
     if (settings->navGlanceShowCardinals) {
         constexpr float kDirs[4][2] = { { 0.0f, 1.0f }, { 1.0f, 0.0f }, { 0.0f, -1.0f }, { -1.0f, 0.0f } };
@@ -2581,22 +2594,8 @@ void MinimapRenderer::DrawInspect(const NavigationFrame& f, float a_alpha) {
             // Camera view cone under the arrow, same north-relative correction as the arrow.
             DrawViewCone(dl, pScreen, f.cameraAngle - snap.northRot, UIScale::Px(48.0f), a_alpha);
             // Draw player arrow
-            float c = std::cos(f.playerAngle - snap.northRot); // relative to snapshot north
-            float s = std::sin(f.playerAngle - snap.northRot);
-            ImVec2 forward(s, -c);
-            ImVec2 right(c, s);
-            const float arrF12 = UIScale::Px(12.0f);
-            const float arrF10 = UIScale::Px(10.0f);
-            const float arrR8  = UIScale::Px(8.0f);
-            const float arrF4  = UIScale::Px(4.0f);
-            ImVec2 p1(pScreen.x + forward.x * arrF12, pScreen.y + forward.y * arrF12);
-            ImVec2 p2(pScreen.x - forward.x * arrF10 - right.x * arrR8, pScreen.y - forward.y * arrF10 - right.y * arrR8);
-            ImVec2 p3(pScreen.x - forward.x * arrF4, pScreen.y - forward.y * arrF4);
-            ImVec2 p4(pScreen.x - forward.x * arrF10 + right.x * arrR8, pScreen.y - forward.y * arrF10 + right.y * arrR8);
-            const float retraceT = SmoothstepLocal(_retraceFade);
-            const ImU32 arrowFill = MapDraw::LerpColor(IM_COL32(255, 255, 255, 255), MapTheme::kRetraceArrow, retraceT);
-            dl->AddQuadFilled(p1, p2, p3, p4, FadeCol(arrowFill, a_alpha));
-            dl->AddQuad(p1, p2, p3, p4, FadeCol(IM_COL32(0, 0, 0, 255), a_alpha), UIScale::Px(1.5f));
+            // Relative to snapshot north.
+            DrawPlayerArrow(dl, pScreen, f.playerAngle - snap.northRot, SmoothstepLocal(_retraceFade), a_alpha);
         }
 
         for (const MapMarker* mp : CollectVisibleMarkers(f.markers, f.isExterior,

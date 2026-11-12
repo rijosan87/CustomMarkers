@@ -542,8 +542,12 @@ namespace MapDraw {
             }
             const float halfW = drawW * 0.5f;
             const float halfH = drawH * 0.5f;
-            ImVec2 imgMin(cx - halfW, cy - halfH);
-            ImVec2 imgMax(cx + halfW, cy + halfH);
+            // Whole even-pixel rect plus exact-size raster, like SnapIconRect.
+            const float snapW = (std::max)(2.0f, std::round(drawW * 0.5f) * 2.0f);
+            const float snapH = (std::max)(2.0f, std::round(drawH * 0.5f) * 2.0f);
+            const ImVec2 imgMin(std::round(cx - snapW * 0.5f), std::round(cy - snapH * 0.5f));
+            const ImVec2 imgMax(imgMin.x + snapW, imgMin.y + snapH);
+            iconSrv = TextureManager::GetIconAtPixelSize(iconSrv, static_cast<int>((std::max)(snapW, snapH)));
             const float tintStr = static_cast<float>((tintCol >> IM_COL32_A_SHIFT) & 0xFF) / 255.0f;
             const ImU32 tintOpaque = (tintCol & ~IM_COL32_A_MASK) | (0xFFu << IM_COL32_A_SHIFT);
             const ImU32 baseTint = LerpColor(IM_COL32(255, 255, 255, 255), tintOpaque, tintStr);

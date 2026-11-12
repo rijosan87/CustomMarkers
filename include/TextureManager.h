@@ -19,7 +19,7 @@ namespace TextureManager {
     ID3D11ShaderResourceView* GetIconByName(const std::string& name);
     ID3D11ShaderResourceView* GetPackIcon(const std::string& a_path);
 
-    // SVG icons, 32..128 px: single-mip raster at exactly px, cached. Otherwise returns base.
+    // SVG icons, 8..128 px: single-mip raster at exactly px, cached. Otherwise returns base.
     ID3D11ShaderResourceView* GetIconAtPixelSize(ID3D11ShaderResourceView* base, int px);
 
     struct Size { std::uint32_t width; std::uint32_t height; };
