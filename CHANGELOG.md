@@ -1,3 +1,16 @@
+# Version 1.3.5
+
+## Features
+
+- **Loot Beam Blacklist:** Location keywords can be blacklisted by name, e.g. `LocTypePlayerHouse` hides beams in all player homes.
+- **Mini Radar:** SVG player arrow icon.
+
+## Fixes
+
+- **Icons:** Small icons look sharper.
+- **HUD Overlays:** HUD Stays visible while using furniture.
+- **Crash logs:** The DLL now reports its exact version.
+
 # Version 1.3.4
 
 ## Features

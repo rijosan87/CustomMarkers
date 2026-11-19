@@ -21,6 +21,7 @@ namespace {
     std::unordered_set<RE::FormID> g_cells;
     std::unordered_set<RE::FormID> g_references;
     std::unordered_set<RE::FormID> g_containerBases;
+    std::vector<RE::BGSKeyword*> g_locationKeywords;
     bool g_loaded = false;
 
     std::filesystem::path GetBlacklistDirectory() {
@@ -74,6 +75,22 @@ namespace {
 
             auto trimmed = trim(line);
             if (trimmed.empty()) {
+                continue;
+            }
+
+            // No bar means a keyword editor ID, keywords keep theirs at runtime.
+            if (trimmed.find('|') == std::string_view::npos) {
+                const std::string editorId(trimmed);
+                auto* keyword = RE::TESForm::LookupByEditorID<RE::BGSKeyword>(editorId);
+                if (!keyword) {
+                    SKSE::log::warn("LootBeamBlacklist: keyword '{}' not found in {}:{}", editorId, a_fileUtf8, lineNumber);
+                    ++result.skipped;
+                    continue;
+                }
+                if (std::find(g_locationKeywords.begin(), g_locationKeywords.end(), keyword) == g_locationKeywords.end()) {
+                    g_locationKeywords.push_back(keyword);
+                }
+                ++result.accepted;
                 continue;
             }
 
@@ -148,6 +165,12 @@ namespace {
                     g_containerBases.insert(form->GetFormID());
                     ++result.accepted;
                     break;
+                case RE::FormType::Keyword:
+                    if (std::find(g_locationKeywords.begin(), g_locationKeywords.end(), form) == g_locationKeywords.end()) {
+                        g_locationKeywords.push_back(form->As<RE::BGSKeyword>());
+                    }
+                    ++result.accepted;
+                    break;
                 default:
                     SKSE::log::warn("LootBeamBlacklist: unsupported form type {} for form {:08X} in {}:{}",
                                     static_cast<int>(form->GetFormType()), form->GetFormID(), a_fileUtf8, lineNumber);
@@ -167,6 +190,7 @@ void Load() {
     g_cells.clear();
     g_references.clear();
     g_containerBases.clear();
+    g_locationKeywords.clear();
 
     const auto dir = GetBlacklistDirectory();
     std::error_code ec;
@@ -237,8 +261,8 @@ void Load() {
         SKSE::log::info("LootBeamBlacklist: loaded '{}' (accepted: {}, skipped: {})", comp.filenameUtf8, res.accepted, res.skipped);
     }
 
-    SKSE::log::info("LootBeamBlacklist: complete. Totals - locations: {}, cells: {}, references: {}, container bases: {}",
-                    g_locations.size(), g_cells.size(), g_references.size(), g_containerBases.size());
+    SKSE::log::info("LootBeamBlacklist: complete. Totals - locations: {}, cells: {}, references: {}, container bases: {}, location keywords: {}",
+                    g_locations.size(), g_cells.size(), g_references.size(), g_containerBases.size(), g_locationKeywords.size());
 
     g_loaded = true;
 }
@@ -273,6 +297,13 @@ bool IsEnvironmentBlacklisted(const RE::TESObjectCELL* a_cell) {
         if (g_locations.contains(id)) {
             s_cachedResult = true;
             return true;
+        }
+        // Read at check time so keywords added by KID or SkyPatcher count.
+        for (auto* keyword : g_locationKeywords) {
+            if (keyword && location->HasKeyword(keyword)) {
+                s_cachedResult = true;
+                return true;
+            }
         }
         location = location->parentLoc;
         if (depth == 63 && location) {
