@@ -25,6 +25,8 @@ namespace EntityMarkerSource {
         IngrLoose, IngrPlant,
         LootAmmo,
         ContSatchel,
+        LootSpellTome,
+        LootOreVein,
         LootCoinPurse,
     };
 

@@ -2032,12 +2032,38 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
             int matches = 0;
             a_first = nullptr;
             if (!radarRows || a_refID == 0) return matches;
+            std::vector<RE::FormID> counted;
             for (const auto& row : *radarRows) {
                 if (std::ranges::find(row.compassRefIDs, a_refID) == row.compassRefIDs.end()) continue;
                 if (!a_first) a_first = &row;
+                if (!row.isMiscellaneous) {
+                    if (std::ranges::find(counted, row.questID) != counted.end()) continue;
+                    counted.push_back(row.questID);
+                }
                 ++matches;
             }
             return matches;
+        };
+
+        const auto objectiveLines = [&](RE::FormID a_refID, RE::FormID a_questID) {
+            constexpr std::size_t kMaxLines = 2;
+            std::vector<std::string> lead;
+            std::vector<std::string> passing;
+            for (const auto& row : *radarRows) {
+                if (row.isMiscellaneous || row.questID != a_questID || row.objectiveText.empty()) continue;
+                if (std::ranges::find(row.compassRefIDs, a_refID) == row.compassRefIDs.end()) continue;
+                const bool isLead = std::ranges::find(row.leadRefIDs, a_refID) != row.leadRefIDs.end();
+                auto& lines = isLead ? lead : passing;
+                std::string line = TruncateUtf8(row.objectiveText, 48);
+                if (std::ranges::find(lines, line) == lines.end()) lines.push_back(std::move(line));
+            }
+            const auto& lines = lead.empty() ? passing : lead;
+            std::string text;
+            for (std::size_t i = 0; i < lines.size() && i < kMaxLines; ++i) {
+                if (i > 0) text += '\n';
+                text += lines[i];
+            }
+            return text;
         };
 
         if (settings->questRowLog && radarRows) {
@@ -2049,8 +2075,10 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
                 const auto it = lastMatches.find(marker.refID);
                 if (it == lastMatches.end() || it->second != matches) {
                     lastMatches[marker.refID] = matches;
-                    logger::info("[QuestLabel] marker ref={:08X} door={} matches={}",
-                                 marker.refID, marker.isDoor, matches);
+                    std::string objectives = first ? objectiveLines(marker.refID, first->questID) : std::string();
+                    std::ranges::replace(objectives, '\n', '|');
+                    logger::info("[QuestLabel] marker ref={:08X} door={} matches={} objectives=\"{}\"",
+                                 marker.refID, marker.isDoor, matches, objectives);
                 }
             }
         }
@@ -2080,7 +2108,7 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
                 e.position = c.marker->position;
                 e.formID = c.marker->refID;
                 e.name = std::move(text);
-                if (!first->name.empty()) e.subtitle = TruncateUtf8(first->objectiveText, 48);
+                if (!first->name.empty()) e.subtitle = objectiveLines(c.marker->refID, first->questID);
                 e.priority = true;
                 e.questIcon = c.marker->isDoor ? 2 : 1;
                 questEntries.push_back(std::move(e));

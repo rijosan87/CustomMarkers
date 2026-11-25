@@ -712,6 +712,7 @@ namespace {
                     const float r = cityOrTown ? 8192.0f : 2048.0f;
                     std::string first;
                     int         count = 0;
+                    std::vector<RE::FormID> counted;
                     for (const auto& q : QuestTracker::GetSingleton()->Get()) {
                         if (!q.hasPosition) continue;
                         auto*        qws = RE::TESForm::LookupByID<RE::TESWorldSpace>(q.worldSpaceID);
@@ -720,6 +721,10 @@ namespace {
                         const float dx = qp.x - a_out.position.x;
                         const float dy = qp.y - a_out.position.y;
                         if (dx * dx + dy * dy > r * r) continue;
+                        if (!q.isMiscellaneous) {
+                            if (std::ranges::find(counted, q.questID) != counted.end()) continue;
+                            counted.push_back(q.questID);
+                        }
                         if (count++ == 0) first = q.isMiscellaneous ? q.objectiveText : q.name;
                     }
                     if (count > 0) {

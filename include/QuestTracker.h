@@ -22,6 +22,7 @@ struct ActiveQuestRow {
     RE::FormID    worldSpaceID = 0;
     std::int32_t  posSource = 0;
     std::vector<RE::FormID> compassRefIDs;
+    std::vector<RE::FormID> leadRefIDs;
 };
 
 class QuestTracker {

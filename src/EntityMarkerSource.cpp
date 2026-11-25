@@ -1,5 +1,6 @@
 #include "EntityMarkerSource.h"
 #include "Settings.h"
+#include "TCCItemStatus.h"
 
 #include <SKSE/SKSE.h>
 
@@ -36,6 +37,43 @@ namespace {
     };
 
     std::uint64_t g_discoveryGeneration = 1;
+
+    bool IsFinishedBook(const RE::TESBoundObject& a_base) {
+        const auto* book = a_base.As<RE::TESObjectBOOK>();
+        if (!book || !book->IsRead()) return false;
+        return TCCItemStatus::Get(book->GetFormID()) == TCCItemStatus::Status::None;
+    }
+
+    bool IsMineableVein(RE::TESObjectREFR& a_ref) {
+        if (a_ref.IsDestroyed()) return false;
+        auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+        auto* policy = vm ? vm->GetObjectHandlePolicy() : nullptr;
+        if (!policy) return false;
+        const auto handle = policy->GetHandleForObject(a_ref.GetFormType(), &a_ref);
+        if (handle == policy->EmptyHandle()) return false;
+        RE::BSTSmartPointer<RE::BSScript::Object> script;
+        return vm->FindBoundObject(handle, "MineOreScript", script) && script;
+    }
+
+    RE::NiPoint3 MarkerPosition(RE::TESObjectREFR& a_ref, SubCategory a_sub) {
+        const auto refPos = a_ref.GetPosition();
+        if (a_sub != SubCategory::LootOreVein) return refPos;
+        auto* miningSpot = a_ref.GetLinkedRef(nullptr);
+        if (!miningSpot) return refPos;
+
+        constexpr float kReachTowardVein = 80.0f;
+        auto pos = miningSpot->GetPosition();
+        const float dx = refPos.x - pos.x;
+        const float dy = refPos.y - pos.y;
+        const float distance = std::sqrt(dx * dx + dy * dy);
+        if (distance > 1.0f) {
+            const float step = (std::min)(kReachTowardVein, distance) / distance;
+            pos.x += dx * step;
+            pos.y += dy * step;
+        }
+        pos.z = (std::max)(pos.z, refPos.z);
+        return pos;
+    }
 
     void BeginDiscoveryBudget(DiscoveryRayBudget* a_budget, bool a_requireLOS) {
         if (!a_budget) return;
@@ -199,7 +237,13 @@ namespace {
                 }
                 break;
             }
-            case RE::FormType::Book:        cat = Category::LooseLoot; sub = SubCategory::LootBook; break;
+            case RE::FormType::Book: {
+                if (IsFinishedBook(*base)) break;
+                cat = Category::LooseLoot;
+                const auto* book = base->As<RE::TESObjectBOOK>();
+                sub = book && book->TeachesSpell() ? SubCategory::LootSpellTome : SubCategory::LootBook;
+                break;
+            }
             case RE::FormType::SoulGem:     cat = Category::LooseLoot; sub = SubCategory::LootSoulGem; break;
             case RE::FormType::Scroll:      cat = Category::LooseLoot; sub = SubCategory::LootScroll; break;
             case RE::FormType::Misc: {
@@ -240,6 +284,9 @@ namespace {
                     cat = Category::Corpse;
                     auto* race = owner->As<RE::Actor>()->GetRace();
                     sub = (race && race->HasKeywordString("ActorTypeNPC")) ? SubCategory::CorpseHumanoid : SubCategory::CorpseCreature;
+                } else if (IsMineableVein(ref)) {
+                    cat = Category::LooseLoot;
+                    sub = SubCategory::LootOreVein;
                 }
                 break;
             }
@@ -272,7 +319,7 @@ namespace {
             return RE::BSContainer::ForEachResult::kContinue;
         }
 
-        const RE::NiPoint3 pos = ref.GetPosition();
+        const RE::NiPoint3 pos = MarkerPosition(ref, sub);
 
         auto& discSet = a_requireLOS ? g_discoveredLOS : g_discovered;
 
@@ -348,7 +395,7 @@ namespace {
             if (!ref || ref->IsDisabled() || ref->IsMarkedForDeletion() || !ref->Get3D()) continue;
             if (a_filter && !a_filter(pending.category, pending.subCategory, *ref)) continue;
 
-            const RE::NiPoint3 pos = ref->GetPosition();
+            const RE::NiPoint3 pos = MarkerPosition(*ref, pending.subCategory);
             if (pos.GetSquaredDistance(a_playerPos) > a_revealSq) continue;
 
             const auto rayStart = std::chrono::steady_clock::now();
@@ -510,6 +557,8 @@ const char* IconNameFor(Category, SubCategory a_sub) {
         case SubCategory::LootFood:       return "food";
         case SubCategory::LootDrink:      return "drink";
         case SubCategory::LootBook:       return "book";
+        case SubCategory::LootSpellTome:  return "book_tome";
+        case SubCategory::LootOreVein:    return "misc_ore";
         case SubCategory::LootSoulGem:    return "soulgem";
         case SubCategory::LootScroll:     return "scroll";
         case SubCategory::LootCoinPurse:  return "coin_purse";

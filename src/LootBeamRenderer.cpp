@@ -210,6 +210,10 @@ namespace {
             case Sub::LootSoulGem:    return "SoulGem";
             case Sub::LootScroll:     return "Scroll";
             case Sub::LootBook:       return "Book";
+            case Sub::LootOreVein:    return "OreVein";
+            case Sub::LootKey:        return "Key";
+            case Sub::LootAmmo:       return "Ammo";
+            case Sub::LootSpellTome:  return "SpellTome";
             case Sub::LootPotion:     return "Potion";
             default:                  return "Other";
         }
@@ -290,7 +294,11 @@ namespace {
             case Sub::LootPotion:     typeEnabled = s->lootBeamShowLootPotion;     break;
             case Sub::LootSoulGem:    typeEnabled = s->lootBeamShowLootSoulGem;    break;
             case Sub::LootScroll:     typeEnabled = s->lootBeamShowLootScroll;     break;
+            case Sub::LootSpellTome:
             case Sub::LootBook:       typeEnabled = s->lootBeamShowLootBook;       break;
+            case Sub::LootOreVein:    typeEnabled = s->lootBeamShowOreVein;        break;
+            case Sub::LootKey:        typeEnabled = s->lootBeamShowLootKey;        break;
+            case Sub::LootAmmo:       typeEnabled = s->lootBeamShowLootAmmo;       break;
             default:
                 if (s->lootBeamPerfLog &&
                     a_cat == EntityMarkerSource::Category::Container &&
@@ -336,7 +344,9 @@ namespace {
             return false;
         }
 
-        if (s->lootBeamMinGoldValue > 0 && a_cat == EntityMarkerSource::Category::LooseLoot && a_sub != Sub::LootCoinPurse) {
+        const bool ignoresValue = a_sub == Sub::LootCoinPurse || a_sub == Sub::LootKey ||
+                                  a_sub == Sub::LootAmmo || a_sub == Sub::LootOreVein;
+        if (s->lootBeamMinGoldValue > 0 && a_cat == EntityMarkerSource::Category::LooseLoot && !ignoresValue) {
             auto* base = a_ref.GetBaseObject();
             if (!base) return false;
             std::int32_t val = base->GetGoldValue();
@@ -420,7 +430,8 @@ namespace {
 
         std::vector<RE::FormID> ids;
         for (const auto& beam : g_beams) {
-            if (beam.category == EntityMarkerSource::Category::LooseLoot) {
+            if (beam.category == EntityMarkerSource::Category::LooseLoot &&
+                beam.subCategory != EntityMarkerSource::SubCategory::LootOreVein) {
                 ids.push_back(beam.formID);
             }
         }
@@ -720,6 +731,8 @@ namespace {
 
         // Harvested flora (e.g. coin purses) sets kHarvested immediately on interaction.
         if ((ref->GetFormFlags() & RE::TESObjectREFR::RecordFlags::kHarvested) != 0) return false;
+
+        if (a_beam.subCategory == EntityMarkerSource::SubCategory::LootOreVein && ref->IsDestroyed()) return false;
 
         using Cat = EntityMarkerSource::Category;
         if ((a_beam.category == Cat::Container || a_beam.category == Cat::Corpse) &&

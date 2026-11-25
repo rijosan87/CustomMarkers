@@ -284,6 +284,7 @@ void Settings::Load() {
     loadEntBool("GlanceEntLootBook",       navGlanceEntLootBook);
     loadEntBool("GlanceEntLootSoulGem",    navGlanceEntLootSoulGem);
     loadEntBool("GlanceEntLootScroll",     navGlanceEntLootScroll);
+    loadEntBool("GlanceEntOreVein",        navGlanceEntOreVein);
     loadEntBool("GlanceEntCorpseHumanoid", navGlanceEntCorpseHumanoid);
     loadEntBool("GlanceEntCorpseCreature", navGlanceEntCorpseCreature);
     loadEntBool("GlanceEntDoorLoad",       navGlanceEntDoorLoad);
@@ -308,6 +309,7 @@ void Settings::Load() {
     loadEntBool("InspectEntLootBook",       navInspectEntLootBook);
     loadEntBool("InspectEntLootSoulGem",    navInspectEntLootSoulGem);
     loadEntBool("InspectEntLootScroll",     navInspectEntLootScroll);
+    loadEntBool("InspectEntOreVein",        navInspectEntOreVein);
     loadEntBool("InspectEntCorpseHumanoid", navInspectEntCorpseHumanoid);
     loadEntBool("InspectEntCorpseCreature", navInspectEntCorpseCreature);
     loadEntBool("InspectEntDoorLoad",       navInspectEntDoorLoad);
@@ -440,6 +442,9 @@ void Settings::Load() {
     lootBeamShowLootSoulGem = (ini.GetLongValue("NavigationOverlay", "LootBeamShowLootSoulGem", lootBeamShowLootSoulGem ? 1L : 0L) != 0);
     lootBeamShowLootScroll = (ini.GetLongValue("NavigationOverlay", "LootBeamShowLootScroll", lootBeamShowLootScroll ? 1L : 0L) != 0);
     lootBeamShowLootBook = (ini.GetLongValue("NavigationOverlay", "LootBeamShowLootBook", lootBeamShowLootBook ? 1L : 0L) != 0);
+    lootBeamShowLootKey = (ini.GetLongValue("NavigationOverlay", "LootBeamShowLootKey", lootBeamShowLootKey ? 1L : 0L) != 0);
+    lootBeamShowLootAmmo = (ini.GetLongValue("NavigationOverlay", "LootBeamShowLootAmmo", lootBeamShowLootAmmo ? 1L : 0L) != 0);
+    lootBeamShowOreVein = (ini.GetLongValue("NavigationOverlay", "LootBeamShowOreVein", lootBeamShowOreVein ? 1L : 0L) != 0);
 
     lootBeamMinGoldValue = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "LootBeamMinGoldValue", lootBeamMinGoldValue)), 0, 5000);
 
@@ -663,6 +668,7 @@ void Settings::Save() {
     saveEntBool("GlanceEntLootBook",       navGlanceEntLootBook);
     saveEntBool("GlanceEntLootSoulGem",    navGlanceEntLootSoulGem);
     saveEntBool("GlanceEntLootScroll",     navGlanceEntLootScroll);
+    saveEntBool("GlanceEntOreVein",        navGlanceEntOreVein);
     saveEntBool("GlanceEntCorpseHumanoid", navGlanceEntCorpseHumanoid);
     saveEntBool("GlanceEntCorpseCreature", navGlanceEntCorpseCreature);
     saveEntBool("GlanceEntDoorLoad",       navGlanceEntDoorLoad);
@@ -687,6 +693,7 @@ void Settings::Save() {
     saveEntBool("InspectEntLootBook",       navInspectEntLootBook);
     saveEntBool("InspectEntLootSoulGem",    navInspectEntLootSoulGem);
     saveEntBool("InspectEntLootScroll",     navInspectEntLootScroll);
+    saveEntBool("InspectEntOreVein",        navInspectEntOreVein);
     saveEntBool("InspectEntCorpseHumanoid", navInspectEntCorpseHumanoid);
     saveEntBool("InspectEntCorpseCreature", navInspectEntCorpseCreature);
     saveEntBool("InspectEntDoorLoad",       navInspectEntDoorLoad);
@@ -784,6 +791,9 @@ void Settings::Save() {
     ini.SetLongValue("NavigationOverlay", "LootBeamShowLootSoulGem", lootBeamShowLootSoulGem ? 1L : 0L);
     ini.SetLongValue("NavigationOverlay", "LootBeamShowLootScroll", lootBeamShowLootScroll ? 1L : 0L);
     ini.SetLongValue("NavigationOverlay", "LootBeamShowLootBook", lootBeamShowLootBook ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamShowLootKey", lootBeamShowLootKey ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamShowLootAmmo", lootBeamShowLootAmmo ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "LootBeamShowOreVein", lootBeamShowOreVein ? 1L : 0L);
     ini.SetLongValue("NavigationOverlay", "LootBeamMinGoldValue", lootBeamMinGoldValue);
 
     ini.SetLongValue("PathTracking", "Enabled", enablePathTracking ? 1L : 0L);

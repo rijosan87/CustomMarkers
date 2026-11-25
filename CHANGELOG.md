@@ -1,3 +1,14 @@
+# Version 1.3.6
+
+## Features
+
+- **Loot Beams:** Added ore veins, keys, ammo and spell tomes. Read books are hidden.
+
+## Fixes
+
+- **Active Quests:** Quests with several current objectives list each one.
+- **Mini Radar:** Quest label shows the objective of the marker you face.
+
 # Version 1.3.5
 
 ## Features

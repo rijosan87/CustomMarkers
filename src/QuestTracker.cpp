@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <format>
+#include <iterator>
 #include <memory>
 #include <set>
 #include <tuple>
@@ -408,38 +409,59 @@ namespace {
     void CollectCompassRefs(
         ActiveQuestRow& a_row,
         RE::TESQuest* a_quest,
-        RE::BGSQuestObjective* a_objective,
-        const std::vector<RE::TESQuestTarget*>& a_eligible,
-        bool a_miscOnly)
+        const std::vector<RE::TESQuestTarget*>& a_targets)
     {
-        const auto add = [&](RE::FormID a_id) {
-            if (a_id != 0 &&
-                std::find(a_row.compassRefIDs.begin(), a_row.compassRefIDs.end(), a_id) == a_row.compassRefIDs.end()) {
-                a_row.compassRefIDs.push_back(a_id);
-        }
+        const auto addTo = [](std::vector<RE::FormID>& a_ids, RE::FormID a_id) {
+            if (std::ranges::find(a_ids, a_id) == a_ids.end()) a_ids.push_back(a_id);
         };
-        for (auto* target : a_eligible) {
-            if (!target) continue;
-            if (a_miscOnly) {
-                bool authored = false;
-                for (std::uint32_t t = 0; a_objective && t < a_objective->numTargets; ++t) {
-                    if (a_objective->targets && a_objective->targets[t] == target) {
-                        authored = true;
-                        break;
-    }
-}
-
-                if (!authored) continue;
-            }
+        for (auto* target : a_targets) {
             if (auto ref = a_quest->GetAliasedRef(target->alias).get()) {
-                add(ref->GetFormID());
+                addTo(a_row.compassRefIDs, ref->GetFormID());
+                addTo(a_row.leadRefIDs, ref->GetFormID());
         }
             const auto* path = reinterpret_cast<const TargetTeleportPath*>(
                 reinterpret_cast<const std::uint8_t*>(target) + 0x18);
+            bool firstDoor = true;
             for (const auto& door : path->doors) {
-                if (door.doorRef) add(door.doorRef->GetFormID());
+                if (door.doorRef) {
+                    addTo(a_row.compassRefIDs, door.doorRef->GetFormID());
+                    if (firstDoor) addTo(a_row.leadRefIDs, door.doorRef->GetFormID());
+                }
+                firstDoor = false;
             }
         }
+    }
+
+    [[nodiscard]] bool ObjectiveAuthorsTarget(const RE::BGSQuestObjective* a_objective, const RE::TESQuestTarget* a_target)
+    {
+        if (!a_objective || !a_objective->targets) return false;
+        for (std::uint32_t t = 0; t < a_objective->numTargets; ++t) {
+            if (a_objective->targets[t] == a_target) return true;
+        }
+        return false;
+    }
+
+    [[nodiscard]] std::vector<RE::TESQuestTarget*> TargetsOf(
+        const RE::BGSQuestObjective* a_objective,
+        const std::vector<RE::TESQuestTarget*>& a_eligible)
+    {
+        std::vector<RE::TESQuestTarget*> targets;
+        for (auto* target : a_eligible) {
+            if (ObjectiveAuthorsTarget(a_objective, target)) targets.push_back(target);
+        }
+        return targets;
+    }
+
+    std::vector<RE::BGSQuestObjective*> PickRowObjectives(
+        RE::TESQuest* a_quest,
+        const std::vector<RE::TESQuestTarget*>& a_eligible)
+    {
+        std::vector<RE::BGSQuestObjective*> picked;
+        for (auto* obj : a_quest->objectives) {
+            if (!obj || obj->state.get() != RE::QUEST_OBJECTIVE_STATE::kDisplayed) continue;
+            if (picked.empty() || !TargetsOf(obj, a_eligible).empty()) picked.push_back(obj);
+        }
+        return picked;
     }
     std::vector<ActiveQuestRow> CollectRows(
         RE::PlayerCharacter* player,
@@ -464,25 +486,46 @@ namespace {
         const char* qname = quest->GetFullName();
         if (!qname || !qname[0]) continue;
 
+            const char* eligibilityReason = nullptr;
+            const auto eligibleTargets = CopyEligibleTargets(player, quest, eligibilityReason);
+            auto objectives = PickRowObjectives(quest, eligibleTargets);
+            if (objectives.empty()) objectives.push_back(nullptr);
+
+            const std::string name = FormatQuestName(qname, quest);
+            for (std::size_t i = 0; i < objectives.size(); ++i) {
+                auto* objective = objectives[i];
+
         ActiveQuestRow row;
         row.questID   = quest->GetFormID();
-        row.name      = FormatQuestName(qname, quest);
+                row.name      = name;
         row.questType = static_cast<std::int32_t>(quest->GetType());
-
-        RE::BGSQuestObjective* firstObj = nullptr;
-        for (auto* obj : quest->objectives) {
-            if (!obj) continue;
-            if (obj->state.get() != RE::QUEST_OBJECTIVE_STATE::kDisplayed) continue;
-            firstObj = obj;
-            row.objectiveText = FormatObjectiveText(obj, quest, quest->currentInstanceID);
-            break;
+                if (objective) {
+                    row.objectiveText  = FormatObjectiveText(objective, quest, quest->currentInstanceID);
+                    row.objectiveIndex = objective->index;
         }
 
-        const char* eligibilityReason = nullptr;
-        const auto eligibleTargets = CopyEligibleTargets(player, quest, eligibilityReason);
-        ResolveObjectivePosition(row, quest, firstObj, markers, playerWorld, true, eligibleTargets, eligibilityReason);
-            CollectCompassRefs(row, quest, nullptr, eligibleTargets, false);
+                auto rowTargets = TargetsOf(objective, eligibleTargets);
+                if (i == 0) {
+                    for (auto* target : eligibleTargets) {
+                        const bool claimed = std::ranges::any_of(objectives, [&](auto* o) {
+                            return ObjectiveAuthorsTarget(o, target);
+                        });
+                        if (!claimed) rowTargets.push_back(target);
+                    }
+                }
+                CollectCompassRefs(row, quest, rowTargets);
+
+                std::vector<HUDMarkerHook::QuestMarker> rowMarkers;
+                if (objectives.size() == 1) {
+                    rowMarkers = markers;
+                } else {
+                    std::ranges::copy_if(markers, std::back_inserter(rowMarkers), [&](const auto& m) {
+                        return std::ranges::find(row.leadRefIDs, m.refID) != row.leadRefIDs.end();
+                    });
+                }
+                ResolveObjectivePosition(row, quest, objective, rowMarkers, playerWorld, true, eligibleTargets, eligibilityReason);
         rows.push_back(std::move(row));
+            }
     }
 
     // Miscellaneous objectives collection path.
@@ -564,7 +607,7 @@ namespace {
             const char* eligibilityReason = nullptr;
             const auto eligibleTargets = CopyEligibleTargets(player, quest, eligibilityReason);
             ResolveObjectivePosition(row, quest, objective, markers, playerWorld, false, eligibleTargets, eligibilityReason);
-                CollectCompassRefs(row, quest, objective, eligibleTargets, true);
+                CollectCompassRefs(row, quest, TargetsOf(objective, eligibleTargets));
             rows.push_back(std::move(row));
         }
     } else if (player && !masterOn && qlog) {

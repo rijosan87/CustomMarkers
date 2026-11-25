@@ -204,6 +204,7 @@ public:
     bool navGlanceEntLootBook       = true;
     bool navGlanceEntLootSoulGem    = true;
     bool navGlanceEntLootScroll     = true;
+    bool navGlanceEntOreVein        = true;
     bool navGlanceEntCorpseHumanoid = true;
     bool navGlanceEntCorpseCreature = true;
     bool navGlanceEntDoorLoad       = true;
@@ -228,6 +229,7 @@ public:
     bool navInspectEntLootBook       = true;
     bool navInspectEntLootSoulGem    = true;
     bool navInspectEntLootScroll     = true;
+    bool navInspectEntOreVein        = true;
     bool navInspectEntCorpseHumanoid = true;
     bool navInspectEntCorpseCreature = true;
     bool navInspectEntDoorLoad       = true;
@@ -271,9 +273,11 @@ public:
             case Sub::LootPotion:     return navGlanceEntLootPotion;
             case Sub::LootFood:       return navGlanceEntLootFood;
             case Sub::LootDrink:      return navGlanceEntLootDrink;
+            case Sub::LootSpellTome:
             case Sub::LootBook:       return navGlanceEntLootBook;
             case Sub::LootSoulGem:    return navGlanceEntLootSoulGem;
             case Sub::LootScroll:     return navGlanceEntLootScroll;
+            case Sub::LootOreVein:    return navGlanceEntOreVein;
             case Sub::CorpseHumanoid: return navGlanceEntCorpseHumanoid;
             case Sub::CorpseCreature: return navGlanceEntCorpseCreature;
             case Sub::DoorLoad:       return navGlanceEntDoorLoad;
@@ -289,7 +293,7 @@ public:
                                           navGlanceEntLootGold ||
                                           navGlanceEntLootKey || navGlanceEntLootPotion || navGlanceEntLootFood ||
                                           navGlanceEntLootDrink || navGlanceEntLootBook || navGlanceEntLootSoulGem ||
-                                          navGlanceEntLootScroll;
+                                          navGlanceEntLootScroll || navGlanceEntOreVein;
             case Cat::Corpse:     return navGlanceEntCorpseHumanoid || navGlanceEntCorpseCreature;
             case Cat::Door:       return navGlanceEntDoorLoad || navGlanceEntDoorRegular;
             case Cat::Ingredient: return navGlanceEntIngrLoose || navGlanceEntIngrPlant;
@@ -317,9 +321,11 @@ public:
             case Sub::LootPotion:     return navInspectEntLootPotion;
             case Sub::LootFood:       return navInspectEntLootFood;
             case Sub::LootDrink:      return navInspectEntLootDrink;
+            case Sub::LootSpellTome:
             case Sub::LootBook:       return navInspectEntLootBook;
             case Sub::LootSoulGem:    return navInspectEntLootSoulGem;
             case Sub::LootScroll:     return navInspectEntLootScroll;
+            case Sub::LootOreVein:    return navInspectEntOreVein;
             case Sub::CorpseHumanoid: return navInspectEntCorpseHumanoid;
             case Sub::CorpseCreature: return navInspectEntCorpseCreature;
             case Sub::DoorLoad:       return navInspectEntDoorLoad;
@@ -335,7 +341,7 @@ public:
                                           navInspectEntLootGold ||
                                           navInspectEntLootKey || navInspectEntLootPotion || navInspectEntLootFood ||
                                           navInspectEntLootDrink || navInspectEntLootBook || navInspectEntLootSoulGem ||
-                                          navInspectEntLootScroll;
+                                          navInspectEntLootScroll || navInspectEntOreVein;
             case Cat::Corpse:     return navInspectEntCorpseHumanoid || navInspectEntCorpseCreature;
             case Cat::Door:       return navInspectEntDoorLoad || navInspectEntDoorRegular;
             case Cat::Ingredient: return navInspectEntIngrLoose || navInspectEntIngrPlant;
@@ -349,6 +355,7 @@ public:
                navGlanceEntLootArmor ||
                navGlanceEntLootGold || navGlanceEntLootKey || navGlanceEntLootPotion || navGlanceEntLootFood ||
                navGlanceEntLootDrink || navGlanceEntLootBook || navGlanceEntLootSoulGem || navGlanceEntLootScroll ||
+               navGlanceEntOreVein ||
                navGlanceEntCorpseHumanoid || navGlanceEntCorpseCreature || navGlanceEntDoorLoad ||
                navGlanceEntDoorRegular || navGlanceEntIngrLoose || navGlanceEntIngrPlant;
     }
@@ -358,6 +365,7 @@ public:
                navInspectEntLootArmor ||
                navInspectEntLootGold || navInspectEntLootKey || navInspectEntLootPotion || navInspectEntLootFood ||
                navInspectEntLootDrink || navInspectEntLootBook || navInspectEntLootSoulGem || navInspectEntLootScroll ||
+               navInspectEntOreVein ||
                navInspectEntCorpseHumanoid || navInspectEntCorpseCreature || navInspectEntDoorLoad ||
                navInspectEntDoorRegular || navInspectEntIngrLoose || navInspectEntIngrPlant;
     }
@@ -464,6 +472,9 @@ public:
     bool         lootBeamShowLootSoulGem    = true;
     bool         lootBeamShowLootScroll     = true;
     bool         lootBeamShowLootBook       = false;
+    bool         lootBeamShowLootKey        = true;
+    bool         lootBeamShowLootAmmo       = false;
+    bool         lootBeamShowOreVein        = true;
 
     // Min gold value threshold for loose loot items (0 = Off / disabled)
     std::int32_t lootBeamMinGoldValue       = 30;
@@ -473,7 +484,8 @@ public:
                lootBeamShowContChest || lootBeamShowContStrongbox || lootBeamShowContSatchel ||
                lootBeamShowLootWeapon || lootBeamShowLootArmor ||
                lootBeamShowLootGold || lootBeamShowLootCoinPurse || lootBeamShowLootPotion ||
-               lootBeamShowLootSoulGem || lootBeamShowLootScroll || lootBeamShowLootBook;
+               lootBeamShowLootSoulGem || lootBeamShowLootScroll || lootBeamShowLootBook ||
+               lootBeamShowLootKey || lootBeamShowLootAmmo || lootBeamShowOreVein;
     }
 
     bool         hideInBeastForm = true;

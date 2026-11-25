@@ -855,8 +855,9 @@ namespace SettingsMenu {
                         { LocalizationManager::Get("Settings.Books") + "##glance",     &settings->navGlanceEntLootBook },
                         { LocalizationManager::Get("Settings.SoulGems") + "##glance",  &settings->navGlanceEntLootSoulGem },
                         { LocalizationManager::Get("Settings.Scrolls") + "##glance",   &settings->navGlanceEntLootScroll },
+                        { LocalizationManager::Get("Settings.OreVeins") + "##glance",  &settings->navGlanceEntOreVein },
                     };
-                    CheckboxFlow(items, 11);
+                    CheckboxFlow(items, 12);
                 }
                 SectionLabel(LocalizationManager::Get("Settings.Corpses").c_str());
                 {
@@ -925,8 +926,9 @@ namespace SettingsMenu {
                         { LocalizationManager::Get("Settings.Books") + "##inspect",     &settings->navInspectEntLootBook },
                         { LocalizationManager::Get("Settings.SoulGems") + "##inspect",  &settings->navInspectEntLootSoulGem },
                         { LocalizationManager::Get("Settings.Scrolls") + "##inspect",   &settings->navInspectEntLootScroll },
+                        { LocalizationManager::Get("Settings.OreVeins") + "##inspect",  &settings->navInspectEntOreVein },
                     };
-                    CheckboxFlow(items, 11);
+                    CheckboxFlow(items, 12);
                 }
                 SectionLabel(LocalizationManager::Get("Settings.Corpses").c_str());
                 {
@@ -1104,6 +1106,9 @@ namespace SettingsMenu {
                         { LocalizationManager::Get("Settings.SoulGems") + "##lootbeam", &settings->lootBeamShowLootSoulGem },
                         { LocalizationManager::Get("Settings.Scrolls") + "##lootbeam",  &settings->lootBeamShowLootScroll },
                         { LocalizationManager::Get("Settings.Books") + "##lootbeam",    &settings->lootBeamShowLootBook },
+                        { LocalizationManager::Get("Settings.Keys") + "##lootbeam",     &settings->lootBeamShowLootKey },
+                        { LocalizationManager::Get("Settings.Ammo") + "##lootbeam",     &settings->lootBeamShowLootAmmo },
+                        { LocalizationManager::Get("Settings.OreVeins") + "##lootbeam", &settings->lootBeamShowOreVein },
                     };
                     CheckboxFlow(items, IM_ARRAYSIZE(items));
                 }
