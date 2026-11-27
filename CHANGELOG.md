@@ -10,6 +10,7 @@
 
 - **Auto-Travel Integration:** Local Map Upgrade's move/remove box no longer pops up in the local map.
 - **Legend:** Shops, inns and smiths added by mods like Atlas Map Markers now come under Shops (needs po3 Tweaks).
+- **Mini Radar:** Hides during OStim and other scenes that take control of the player.
 
 # Version 1.3.6
 

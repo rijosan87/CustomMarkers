@@ -339,6 +339,11 @@ namespace MenuUtils {
             return true;
         }
 
+        if (const auto* player = RE::PlayerCharacter::GetSingleton();
+            player && player->GetPlayerRuntimeData().playerFlags.aiControlledPackage) {
+            return true;
+        }
+
         return IsBlockingMenuOpen() || IsInPhotoMode() || AreFightingControlsDisabled();
     }
 
