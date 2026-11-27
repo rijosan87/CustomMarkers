@@ -30,11 +30,14 @@ namespace RimMarkerSource {
             RE::FormID locationID = 0;
             std::string path[2];
             bool resolved[2] = {};
+            std::uint32_t color[2] = {};
+            bool colorResolved[2] = {};
         };
 
         std::vector<CatalogEntry> g_catalog;
         RE::TESWorldSpace* g_catalogRoot = nullptr;
         int g_newResolves = 0;
+        std::uint32_t g_colorGeneration = 0;
 
         std::atomic_bool g_catalogDirty = true;
         std::atomic_bool g_taskPending = false;
@@ -104,6 +107,15 @@ namespace RimMarkerSource {
             return a_entry.path[i];
         }
 
+        std::uint32_t ResolvedColor(CatalogEntry& a_entry, bool a_undiscovered) {
+            const int i = a_undiscovered ? 1 : 0;
+            if (!a_entry.colorResolved[i]) {
+                a_entry.colorResolved[i] = PNGIIBridge::ResolveRefColor(a_entry.formID, a_entry.locationID, a_entry.type,
+                                                                        a_undiscovered, a_entry.color[i]);
+            }
+            return a_entry.color[i];
+        }
+
         void Collect() {
             auto* ui = RE::UI::GetSingleton();
             if (ui && ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME)) return;
@@ -140,6 +152,10 @@ namespace RimMarkerSource {
             std::ranges::sort(ranged, {}, &std::pair<float, CatalogEntry*>::first);
 
             g_newResolves = 0;
+            if (const auto gen = PNGIIBridge::ColorGeneration(); gen != g_colorGeneration) {
+                g_colorGeneration = gen;
+                for (auto& e : g_catalog) e.colorResolved[0] = e.colorResolved[1] = false;
+            }
             snapshot->worldSpaceID = world->GetFormID();
             for (const auto& [dSq, e] : ranged) {
                 if (snapshot->entries.size() >= static_cast<std::size_t>(settings->navMaxRimMarkers)) break;
@@ -160,6 +176,7 @@ namespace RimMarkerSource {
                 out.undiscovered = undiscovered;
                 out.packPath = ResolvedPath(*e, undiscovered);
                 out.dimmed = undiscovered && out.packPath.empty();
+                if (settings->navRimPngiiColors) out.pngiiColor = ResolvedColor(*e, undiscovered);
                 out.formID = e->formID;
                 if (const char* name = extra->mapData->locationName.GetFullName()) out.name = name;
                 if (settings->rimMarkerLog) {

@@ -2,6 +2,7 @@
 #include "MarkerManager.h"
 #include "MapMarkerRenderer.h"
 #include "LocalMapRenderer.h"
+#include "DestinationMirror.h"
 #include "Settings.h"
 
 #include <RE/Skyrim.h>
@@ -142,6 +143,25 @@ namespace {
         return true;
     }
 
+    bool IsLocalMapReady() {
+        auto* ui = RE::UI::GetSingleton();
+        auto mapMenu = ui ? ui->GetMenu<RE::MapMenu>() : nullptr;
+        if (!mapMenu) return false;
+        const auto localMapBase = reinterpret_cast<std::uintptr_t>(mapMenu.get()) + 0x60;
+        return *reinterpret_cast<const bool*>(localMapBase + 0x303FC) &&
+               *reinterpret_cast<const bool*>(localMapBase + 0x303FE);
+    }
+
+    void HideSharedMarkerTrigger(RE::ButtonEvent* a_event) {
+        if (!DestinationMirror::IsApplied() || !IsLocalMapReady()) return;
+        const auto* userEvents = RE::UserEvents::GetSingleton();
+        if (!userEvents) return;
+        if (a_event->userEvent == userEvents->click ||
+            a_event->userEvent == userEvents->placePlayerMarker) {
+            a_event->userEvent = RE::BSFixedString("");
+        }
+    }
+
     bool HookedProcessButton(std::uintptr_t a_handler, RE::ButtonEvent* a_event) {
         using func_t = bool(*)(std::uintptr_t, RE::ButtonEvent*);
         auto callOriginal = [&]() -> bool {
@@ -156,7 +176,11 @@ namespace {
             a_event->GetIDCode() == 0 &&
             a_event->IsDown();
 
-        if (!isLeftMouseDown) return callOriginal();
+        if (!isLeftMouseDown) {
+            const bool handled = callOriginal();
+            HideSharedMarkerTrigger(a_event);
+            return handled;
+        }
 
         struct NeutralizeOnExit {
             RE::ButtonEvent* ev;

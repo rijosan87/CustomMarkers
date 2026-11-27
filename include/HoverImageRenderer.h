@@ -2,7 +2,6 @@
 
 // Renders preview location artwork and screenshots in hover stat cards.
 
-
 #include <RE/Skyrim.h>
 #include <string>
 

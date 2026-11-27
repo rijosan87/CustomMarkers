@@ -21,12 +21,7 @@ namespace MapTheme {
     // disabled state, which should NOT track the user's body color.
     constexpr ImU32 kMutedText       = IM_COL32(160, 150, 130, 255);
 
-    constexpr ImU32 kRowHoverBg      = IM_COL32(140, 115,  65,  55);
-
     constexpr ImU32 kTabTrayBg       = IM_COL32(  0,   0,   0,  60);  // recess behind the whole strip
-    constexpr ImU32 kTabDivider      = IM_COL32(140, 115,  65,  70);  // between cells, shares the edge
-    constexpr ImU32 kTabHoverBg      = IM_COL32(140, 115,  65,  40);  // inactive cell under cursor
-    constexpr ImU32 kTabActiveBg     = IM_COL32(140, 115,  65,  90);  // selected cell
 
     constexpr ImU32 kRemoveBg        = IM_COL32( 80,  30,  30, 220);
     constexpr ImU32 kRemoveBgHover   = IM_COL32(170,  45,  45, 255);

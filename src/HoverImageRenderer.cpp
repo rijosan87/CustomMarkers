@@ -404,13 +404,13 @@ namespace {
             const float ft = m * 3.28084f;
             const float mi = m / 1609.344f;
             if (mi < 0.1f) {
-                return std::format("{} {}", static_cast<int>(std::round(ft / 10.0f) * 10.0f),
+                return std::format("{} {}", static_cast<int>(std::round(ft)),
                                    LocalizationManager::Get("StatCard.UnitFeet"));
             }
             return std::format("{:.1f} {}", mi, LocalizationManager::Get("StatCard.UnitMiles"));
         }
         if (m < 1000.0f) {
-            return std::format("{} {}", static_cast<int>(std::round(m / 10.0f) * 10.0f),
+            return std::format("{} {}", static_cast<int>(std::round(m)),
                                LocalizationManager::Get("StatCard.UnitMeters"));
         }
         return std::format("{:.1f} {}", m / 1000.0f, LocalizationManager::Get("StatCard.UnitKilometers"));
@@ -1577,7 +1577,6 @@ void HoverImageRenderer::OpenContextMenu() {
 std::int32_t HoverImageRenderer::GetOpenMenuMarkerIndex() {
     return g_menuMarkerIdx.load();
 }
-
 
 namespace {
     std::int32_t GetLocalHoveredIndex(RE::MapMenu** a_outMenu = nullptr) {

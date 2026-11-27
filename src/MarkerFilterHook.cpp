@@ -285,9 +285,46 @@ namespace {
 
     std::unordered_map<std::uint16_t, FocusMode> g_moddedModeCache;
 
+    constexpr std::array<std::string_view, 6> kShopWords{
+        "shop", "tavern", "market", "smith", "trader", "merchant",
+    };
+
+    bool IsShopByEditorID(RE::TESObjectREFR* a_ref) {
+        if (!a_ref) {
+            return false;
+        }
+        using GetFormEditorID_t = const char* (*)(std::uint32_t);
+        static const auto tweaks = GetModuleHandleW(L"po3_Tweaks.dll");
+        static const auto lookup = reinterpret_cast<GetFormEditorID_t>(tweaks ? GetProcAddress(tweaks, "GetFormEditorID") : nullptr);
+        if (!lookup) {
+            return false;
+        }
+        const char* rawID = lookup(a_ref->GetFormID());
+        if (!rawID) {
+            return false;
+        }
+        std::string editorID = rawID;
+        std::ranges::transform(editorID, editorID.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        for (const auto word : kShopWords) {
+            if (editorID.find(word) != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    FocusMode ModeForVanillaRef(RE::TESObjectREFR* a_refr, std::uint16_t a_type) {
+        if (IsShopByEditorID(a_refr)) {
+            return FocusMode::kShops;
+        }
+        return ModeForType(static_cast<RE::MARKER_TYPE>(a_type));
+    }
+
+    std::unordered_map<RE::FormID, FocusMode> g_vanillaModeByFormID;
+
     FocusMode ResolveModeForRef(RE::TESObjectREFR* a_refr, std::uint16_t a_type) {
         if (a_type <= static_cast<std::uint16_t>(RE::MARKER_TYPE::kYouAreHere)) {
-            return ModeForType(static_cast<RE::MARKER_TYPE>(a_type));
+            return ModeForVanillaRef(a_refr, a_type);
         }
         if (auto it = g_moddedModeCache.find(a_type); it != g_moddedModeCache.end()) {
             return it->second;
@@ -302,7 +339,17 @@ namespace {
 
     FocusMode ResolveMode(const MarkerEntry* a_entry, std::uint16_t a_type) {
         if (a_type <= static_cast<std::uint16_t>(RE::MARKER_TYPE::kYouAreHere)) {
+            RE::NiPointer<RE::TESObjectREFR> refr;
+            if (!a_entry->handle || !RE::LookupReferenceByHandle(a_entry->handle, refr) || !refr) {
             return ModeForType(static_cast<RE::MARKER_TYPE>(a_type));
+            }
+            const RE::FormID formID = refr->GetFormID();
+            if (auto it = g_vanillaModeByFormID.find(formID); it != g_vanillaModeByFormID.end()) {
+                return it->second;
+            }
+            const FocusMode mode = ModeForVanillaRef(refr.get(), a_type);
+            g_vanillaModeByFormID[formID] = mode;
+            return mode;
         }
         if (auto it = g_moddedModeCache.find(a_type); it != g_moddedModeCache.end()) {
             return it->second;

@@ -6,6 +6,8 @@ namespace PNGII::API
 {
 	inline constexpr std::uint32_t kVersion1 = 1;
 	inline constexpr std::uint32_t kVersion2 = 2;
+	inline constexpr std::uint32_t kVersion3 = 3;
+	inline constexpr std::uint32_t kVersion4 = 4;
 	inline constexpr char kExportName[] = "PNGII_RequestAPI";
 
 	enum class Result : std::uint32_t
@@ -72,6 +74,40 @@ namespace PNGII::API
 		GetMapMarkerIconCountFunction getMapMarkerIconCount;
 		GetMapMarkerIconFunction getMapMarkerIcon;
 		ReadIconFileFunction readIconFile;
+	};
+
+	using ResolveIconColorFunction = Result (*)(std::uint32_t formID, const char* iconLabel, std::int32_t soulStatus,
+		std::uint32_t* rgb) noexcept;
+
+	struct InterfaceV3
+	{
+		std::uint32_t version;
+		std::uint32_t structSize;
+		ResolveIconFunction resolveIcon;
+		GetIconLabelFunction getIconLabel;
+		ResolveMapMarkerIconFunction resolveMapMarkerIcon;
+		GetMapMarkerIconCountFunction getMapMarkerIconCount;
+		GetMapMarkerIconFunction getMapMarkerIcon;
+		ReadIconFileFunction readIconFile;
+		ResolveIconColorFunction resolveIconColor;
+	};
+
+	using ResolveMapMarkerColorFunction = Result (*)(const MapMarkerQuery* query, std::uint32_t* rgb) noexcept;
+	using GetColorGenerationFunction = Result (*)(std::uint32_t* generation) noexcept;
+
+	struct InterfaceV4
+	{
+		std::uint32_t version;
+		std::uint32_t structSize;
+		ResolveIconFunction resolveIcon;
+		GetIconLabelFunction getIconLabel;
+		ResolveMapMarkerIconFunction resolveMapMarkerIcon;
+		GetMapMarkerIconCountFunction getMapMarkerIconCount;
+		GetMapMarkerIconFunction getMapMarkerIcon;
+		ReadIconFileFunction readIconFile;
+		ResolveIconColorFunction resolveIconColor;
+		ResolveMapMarkerColorFunction resolveMapMarkerColor;
+		GetColorGenerationFunction getColorGeneration;
 	};
 
 	using RequestAPIFunction = const void* (*)(std::uint32_t version) noexcept;

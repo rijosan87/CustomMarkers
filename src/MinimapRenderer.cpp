@@ -45,7 +45,6 @@
 #include <unordered_set>
 #include <vector>
 
-
 #include <SKSE/SKSE.h>
 
 namespace {
@@ -1594,7 +1593,6 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
     const float posY = std::clamp(static_cast<float>(settings->navGlancePosY), bandRing, maxY);
     const ImVec2 center(posX + kGlanceRadius, posY + kGlanceRadius);
 
-
     const float kGlanceSquareRounding = UIScale::Px(10.0f);
     const float halfSize = kGlanceRadius;
     const bool square = settings->navGlanceShape == 1;
@@ -2269,8 +2267,11 @@ void MinimapRenderer::DrawGlance(const NavigationFrame& f, float a_alpha) {
                     logger::info("RimMarkers: no icon {} packPath='{}'", e.logLabel, e.packPath);
                 }
             }
+            const std::uint32_t rgb = e.pngiiColor;
+            const ImU32 tint = rgb ? IM_COL32((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF, 255)
+                                   : IM_COL32(255, 255, 255, 0);
             MapDraw::DrawPin(dl, drawPos.x, drawPos.y, focusT, 1u, icon, drawScale,
-                             IM_COL32(255, 255, 255, 0), drawAlpha, UIScale::Master(),
+                             tint, drawAlpha, UIScale::Master(),
                              /*customPin=*/false);
         };
         for (const auto& e : rim->entries) {

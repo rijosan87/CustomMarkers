@@ -181,10 +181,16 @@ private:
     bool _wasDraggingFilter = false;
     float _filterAnim = 1.0f;
     bool  _filterAnimInit = false;
+    bool   _filterHeaderPressed = false;
+    float  _filterHeaderPressX = 0.0f;
+    float  _filterHeaderPressY = 0.0f;
 
     bool  _draggingPanel = false;
     bool  _panelPrevLeftDown = false;
     float _panelGrabDX = 0, _panelGrabDY = 0;
+    float _panelPressX = 0, _panelPressY = 0;
+    bool  _panelDragMoved = false;
+    float _listOpenAnim = -1.0f;
 
     void DrawListPanel();
     struct NoteRow { RE::FormID formID; std::string displayName; RE::NiPoint3 position; };

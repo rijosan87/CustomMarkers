@@ -1357,9 +1357,35 @@ namespace MapDraw {
         return changed;
     }
 
+    inline void DrawSoftStrip(ImDrawList* dl, ImVec2 a_min, ImVec2 a_max, ImU32 a_col) {
+        const ImU32 clear = WithAlpha(a_col, 0.0f);
+        const float peakX = a_min.x + (a_max.x - a_min.x) * 0.2f;
+        dl->AddRectFilledMultiColor(a_min, ImVec2(peakX, a_max.y), clear, a_col, a_col, clear);
+        dl->AddRectFilledMultiColor(ImVec2(peakX, a_min.y), a_max, a_col, clear, clear, a_col);
+    }
+
+    inline void DrawChevronHandle(ImDrawList* dl, ImVec2 a_center, float a_size, float a_angle, ImU32 a_col) {
+        const float half  = a_size * 0.5f;
+        const float tipX  = half * 0.35f;
+        const float armX  = -half * 0.35f;
+        const float armY  = half * 0.7f;
+        const float c = std::cos(a_angle), s = std::sin(a_angle);
+        const auto Turn = [&](float a_x, float a_y) {
+            return ImVec2(a_center.x + a_x * c - a_y * s, a_center.y + a_x * s + a_y * c);
+        };
+        const ImVec2 pts[3] = { Turn(armX, -armY), Turn(tipX, 0.0f), Turn(armX, armY) };
+        dl->AddPolyline(pts, 3, a_col, ImDrawFlags_None, (std::max)(1.5f, a_size * 0.12f));
+    }
+
     inline ImVec2 g_cursorReq{ -1.0f, -1.0f };
 
     inline void RequestCursor(float mx, float my) { g_cursorReq = ImVec2(mx, my); }
+
+    inline bool g_cursorHot = false;
+    inline void MarkCursorHot() { g_cursorHot = true; }
+
+    inline float g_cursorHotAnim   = 0.0f;
+    inline float g_cursorPressAnim = 0.0f;
 
     inline void DrawCursor(ImDrawList* dl, float mx, float my);
 
@@ -1368,6 +1394,18 @@ namespace MapDraw {
     inline void DrawRequestedCursor() {
         const ImVec2 c = g_cursorReq;
         g_cursorReq = ImVec2(-1.0f, -1.0f);
+        const bool hot = g_cursorHot || ImGui::IsAnyItemHovered();
+        g_cursorHot = false;
+
+        const float dt = std::min(ImGui::GetIO().DeltaTime, 0.1f);
+        const auto Ease = [dt](float a_value, float a_target, float a_speed) {
+            return a_target + (a_value - a_target) * std::pow(a_speed, dt);
+        };
+        g_cursorHotAnim   = Ease(g_cursorHotAnim, hot ? 1.0f : 0.0f, 0.0005f);
+        const bool pressed = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+        g_cursorPressAnim = Ease(g_cursorPressAnim, pressed ? 1.0f : 0.0f, pressed ? 0.000001f : 0.001f);
+        if (!pressed && g_cursorPressAnim < 0.02f) g_cursorPressAnim = 0.0f;
+        if (!hot && g_cursorHotAnim < 0.02f) g_cursorHotAnim = 0.0f;
         if (c.x >= 0.0f && c.y >= 0.0f) {
             DrawCursor(ImGui::GetForegroundDrawList(), c.x, c.y);
         }
@@ -1381,6 +1419,12 @@ namespace MapDraw {
         const float rawScale = dispH > 0.0f ? (dispH / 1080.0f) : 1.0f;
         const float resScale = 1.0f + (rawScale - 1.0f) * 0.5f;
 
+        const float feedbackScale = (1.0f + 0.10f * g_cursorHotAnim) * (1.0f - 0.15f * g_cursorPressAnim);
+        const auto Tint = [](float a_white, float a_gold) {
+            return static_cast<int>(a_white + (a_gold - a_white) * g_cursorHotAnim);
+        };
+        const ImU32 tint = IM_COL32(255, Tint(255.0f, 214.0f), Tint(255.0f, 140.0f), 255);
+
         if (s_cursorSrv) {
             const auto sz = TextureManager::GetTextureSize(s_cursorSrv);
             if (sz.width > 0 && sz.height > 0) {
@@ -1388,16 +1432,16 @@ namespace MapDraw {
                 constexpr float kBaseCursorHeightPx = 38.0f;
                 const float aspect = static_cast<float>(sz.width) /
                                      static_cast<float>(sz.height);
-                const float h = std::round(kBaseCursorHeightPx * resScale);
-                const float w = std::round(h * aspect);
+                const float h = std::round(kBaseCursorHeightPx * resScale) * feedbackScale;
+                const float w = std::round(kBaseCursorHeightPx * resScale * aspect) * feedbackScale;
                 dl->AddImage(reinterpret_cast<ImTextureID>(s_cursorSrv),
-                             ImVec2(mx, my), ImVec2(mx + w, my + h));
+                             ImVec2(mx, my), ImVec2(mx + w, my + h),
+                             ImVec2(0, 0), ImVec2(1, 1), tint);
                 return;
             }
         }
 
-        // Fallback: hand-drawn arrow when cursor.png is missing or failed load.
-        const float s = 1.7f * resScale;
+        const float s = 1.7f * resScale * feedbackScale;
         const ImVec2 base[7] = {
             {  0.0f,  0.0f }, {  0.0f, 16.0f }, {  3.7f, 12.3f },
             {  6.0f, 17.6f }, {  8.4f, 16.5f }, {  5.8f, 11.5f }, { 11.0f, 11.0f },
@@ -1406,7 +1450,7 @@ namespace MapDraw {
         for (int i = 0; i < 7; ++i)
             p[i] = ImVec2(mx + base[i].x * s, my + base[i].y * s);
         for (int i = 1; i <= 5; ++i)
-            dl->AddTriangleFilled(p[0], p[i], p[i + 1], IM_COL32(255, 255, 255, 255));
+            dl->AddTriangleFilled(p[0], p[i], p[i + 1], tint);
         dl->AddPolyline(p, 7, IM_COL32(0, 0, 0, 255), ImDrawFlags_Closed, 1.4f * resScale);
     }
     inline constexpr float kMapPlaneZ = 180000.0f;

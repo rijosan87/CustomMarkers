@@ -372,6 +372,7 @@ void Settings::Load() {
     }
     navMaxRimMarkers = std::clamp(static_cast<int>(ini.GetLongValue("NavigationOverlay", "MaxRimMarkers", navMaxRimMarkers)), 1, 30);
     navRimShowUndiscovered = (ini.GetLongValue("NavigationOverlay", "RimShowUndiscovered", navRimShowUndiscovered ? 1L : 0L) != 0);
+    navRimPngiiColors = (ini.GetLongValue("NavigationOverlay", "RimPngiiColors", navRimPngiiColors ? 1L : 0L) != 0);
     for (std::size_t i = 0; i < std::size(navRimMode); ++i) {
         const std::string key = std::string("RimShow") + MarkerFilterHook::GetModeName(static_cast<MarkerFilterHook::FocusMode>(i));
         navRimMode[i] = (ini.GetLongValue("NavigationOverlay", key.c_str(), navRimMode[i] ? 1L : 0L) != 0);
@@ -500,6 +501,8 @@ void Settings::Load() {
     ReadColor3Hex(ini, "Appearance", "BodyColor", nullptr, bodyColorR, bodyColorG, bodyColorB);
     ReadColor4Hex(ini, "Appearance", "BgColor", nullptr, bgColorR, bgColorG, bgColorB, bgColorA);
     ReadColor4Hex(ini, "Appearance", "BorderColor", nullptr, borderColorR, borderColorG, borderColorB, borderColorA);
+    ReadColor4Hex(ini, "Appearance", "HighlightColor", nullptr, highlightColorR, highlightColorG, highlightColorB, highlightColorA);
+    ReadColor4Hex(ini, "Appearance", "TabColor", nullptr, tabColorR, tabColorG, tabColorB, tabColorA);
 
     bgShadow = (ini.GetLongValue("Appearance", "BgShadow", bgShadow ? 1L : 0L) != 0);
     bgGradient = (ini.GetLongValue("Appearance", "BgGradient", bgGradient ? 1L : 0L) != 0);
@@ -742,6 +745,7 @@ void Settings::Save() {
     ini.SetLongValue("NavigationOverlay", "RimMarkerRange", static_cast<long>(navRimMarkerRange / Settings::kUnitsPerMeter));
     ini.SetLongValue("NavigationOverlay", "MaxRimMarkers", navMaxRimMarkers);
     ini.SetLongValue("NavigationOverlay", "RimShowUndiscovered", navRimShowUndiscovered ? 1L : 0L);
+    ini.SetLongValue("NavigationOverlay", "RimPngiiColors", navRimPngiiColors ? 1L : 0L);
     for (std::size_t i = 0; i < std::size(navRimMode); ++i) {
         const std::string key = std::string("RimShow") + MarkerFilterHook::GetModeName(static_cast<MarkerFilterHook::FocusMode>(i));
         ini.SetLongValue("NavigationOverlay", key.c_str(), navRimMode[i] ? 1L : 0L);
@@ -827,6 +831,8 @@ void Settings::Save() {
     WriteColor3Hex(ini, "Appearance", "BodyColor", bodyColorR, bodyColorG, bodyColorB);
     WriteColor4Hex(ini, "Appearance", "BgColor", bgColorR, bgColorG, bgColorB, bgColorA);
     WriteColor4Hex(ini, "Appearance", "BorderColor", borderColorR, borderColorG, borderColorB, borderColorA);
+    WriteColor4Hex(ini, "Appearance", "HighlightColor", highlightColorR, highlightColorG, highlightColorB, highlightColorA);
+    WriteColor4Hex(ini, "Appearance", "TabColor", tabColorR, tabColorG, tabColorB, tabColorA);
 
     ini.SetLongValue("Appearance", "BgShadow", bgShadow ? 1L : 0L);
     ini.SetLongValue("Appearance", "BgGradient", bgGradient ? 1L : 0L);

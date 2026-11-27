@@ -1,3 +1,16 @@
+# Version 1.3.7
+
+## Features
+
+- **Mini Radar:** Rim icons can use PNG Icon Injector's map marker colors.
+- **Appearance:** New Highlight and Tab Color settings for hover and list panel tabs. Minor design tweaks.
+- **Stat card:** Sweeping the cursor quickly across the map no longer flashes stats card.
+
+## Fixes
+
+- **Auto-Travel Integration:** Local Map Upgrade's move/remove box no longer pops up in the local map.
+- **Legend:** Shops, inns and smiths added by mods like Atlas Map Markers now come under Shops (needs po3 Tweaks).
+
 # Version 1.3.6
 
 ## Features

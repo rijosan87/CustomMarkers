@@ -15,6 +15,7 @@
 
 #include <Windows.h>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <memory>
 #include "ImGui/Renderer.h"
@@ -100,19 +101,50 @@ namespace {
         }
     }
 
+    constexpr float                     kSweepScreensPerSec = 1.2f;
+    constexpr std::chrono::milliseconds kSweepSettle{ 100 };
+    ImVec2                                g_lastCursorPos{ -1.0f, -1.0f };
+    std::chrono::steady_clock::time_point g_lastCursorSample{};
+    std::chrono::steady_clock::time_point g_lastSweepTime{};
+    std::atomic<bool>                     g_cursorSweeping{ false };
+
+    void UpdateCursorSweep() {
+        if (!ImGui::GetCurrentContext()) return;
+        const ImVec2 pos   = ImGui::GetIO().MousePos;
+        const float  dispH = ImGui::GetIO().DisplaySize.y;
+        const auto   now   = std::chrono::steady_clock::now();
+
+        if (g_lastCursorPos.x >= 0.0f && dispH > 0.0f) {
+            const float secs = std::chrono::duration<float>(now - g_lastCursorSample).count();
+            if (secs > 0.0f && secs < 0.25f) {
+                const float dx = pos.x - g_lastCursorPos.x;
+                const float dy = pos.y - g_lastCursorPos.y;
+                const float screensPerSec = std::sqrt(dx * dx + dy * dy) / dispH / secs;
+                if (screensPerSec > kSweepScreensPerSec) g_lastSweepTime = now;
+            }
+        }
+        g_lastCursorPos    = pos;
+        g_lastCursorSample = now;
+
+        const bool sweeping = now - g_lastSweepTime < kSweepSettle;
+        if (sweeping != g_cursorSweeping.exchange(sweeping) &&
+            Settings::GetSingleton()->cursorVerboseLog) {
+            logger::info("MarkerHoverHook: cursor {}", sweeping ? "sweeping, hover off" : "settled, hover on");
+        }
+    }
+
     void HookedFxDelegateInvoke(void* a_movie, const char* a_methodName,
                                 void* a_args, std::uint64_t a_reserved) {
         const bool isOurMethod = (a_methodName == g_setSelectedMarkerLiteral);
 
         if (isOurMethod && a_args) {
             bool suppress = CtrlHeld() || MapLookRemapHook::IsTilting()
-                               || g_cameraMoving.load()
+                               || g_cameraMoving.load() || g_cursorSweeping.load()
                                || InputHook::IsTextInputActive()
                                || MapMarkerRenderer::GetSingleton()->IsNoteDialogOpen()
                                || MapMarkerRenderer::GetSingleton()->IsCustomPinHovered()
                                || MapMarkerRenderer::GetSingleton()->CursorOverPanel()
                                || (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse);
-
 
             if (suppress || g_hoverPassMenu) {
                 auto** vtbl = *reinterpret_cast<void***>(a_args);
@@ -238,6 +270,7 @@ namespace {
 
     void HookedUpdateHoveredMarker(RE::MapMenu* a_menu) {
         if (a_menu) UpdateCameraMotion(a_menu);
+        UpdateCursorSweep();
         // Menu just closed: seed the hovered slot so vanilla sends a fresh
         // SetSelectedMarker and the held zoom cannot stick.
         static std::int32_t s_lastMenuIdx = -1;
@@ -252,7 +285,7 @@ namespace {
         g_hoverPassMenu = nullptr;
         if (!a_menu) return;
         if (CtrlHeld() || MapLookRemapHook::IsTilting()
-                       || g_cameraMoving.load()
+                       || g_cameraMoving.load() || g_cursorSweeping.load()
                        || MapMarkerRenderer::GetSingleton()->CursorOverPanel()
                        || InputHook::IsTextInputActive()
                        || MapMarkerRenderer::GetSingleton()->IsNoteDialogOpen()
@@ -271,6 +304,10 @@ namespace {
         }
         HoverImageRenderer::SampleCardState(a_menu);
     }
+}
+
+bool MarkerHoverHook::IsCursorSweeping() {
+    return g_cursorSweeping.load();
 }
 
 void MarkerHoverHook::Install() {

@@ -13,6 +13,7 @@ namespace PNGIIBridge {
         constexpr std::uint16_t kLastLocationType = 59;
 
         const PNGII::API::InterfaceV2* g_api = nullptr;
+        const PNGII::API::InterfaceV4* g_colorApi = nullptr;
         bool g_canRead = false;
         std::string g_paths[2][kTypeSlots];
         std::atomic_bool g_ready = false;
@@ -66,17 +67,26 @@ namespace PNGIIBridge {
         HMODULE dll = GetModuleHandleA("PNGIconInjector.dll");
         auto request = dll ? reinterpret_cast<PNGII::API::RequestAPIFunction>(
             GetProcAddress(dll, PNGII::API::kExportName)) : nullptr;
-        auto* api = request ? static_cast<const PNGII::API::InterfaceV2*>(request(PNGII::API::kVersion2)) : nullptr;
+        const auto* v4 = request ? static_cast<const PNGII::API::InterfaceV4*>(request(PNGII::API::kVersion4)) : nullptr;
+        const auto v4Needed = offsetof(PNGII::API::InterfaceV4, getColorGeneration) +
+                              sizeof(PNGII::API::GetColorGenerationFunction);
+        if (v4 && v4->version == PNGII::API::kVersion4 && v4->structSize >= v4Needed && v4->resolveMapMarkerColor &&
+            v4->getColorGeneration) {
+            g_colorApi = v4;
+        }
+        auto* api = g_colorApi ? reinterpret_cast<const PNGII::API::InterfaceV2*>(g_colorApi)
+                    : request  ? static_cast<const PNGII::API::InterfaceV2*>(request(PNGII::API::kVersion2))
+                               : nullptr;
         const auto needed = offsetof(PNGII::API::InterfaceV2, resolveMapMarkerIcon) +
                             sizeof(PNGII::API::ResolveMapMarkerIconFunction);
-        if (api && api->version == PNGII::API::kVersion2 && api->structSize >= needed && api->resolveMapMarkerIcon) {
+        if (api && api->version >= PNGII::API::kVersion2 && api->structSize >= needed && api->resolveMapMarkerIcon) {
             g_api = api;
             const auto readNeeded = offsetof(PNGII::API::InterfaceV2, readIconFile) +
                                     sizeof(PNGII::API::ReadIconFileFunction);
             g_canRead = api->structSize >= readNeeded && api->readIconFile;
         }
-        logger::info("PNGII map icons: {}, BSA reads {}", g_api ? "V2 found" : "not available, using CMM art",
-            g_canRead ? "yes" : "no");
+        logger::info("PNGII map icons: {}, BSA reads {}, colors {}", g_api ? "API found" : "not available, using CMM art",
+            g_canRead ? "yes" : "no", g_colorApi ? "yes" : "no");
     }
 
     void RequestFill() {
@@ -132,6 +142,29 @@ namespace PNGIIBridge {
         const auto r = g_api->resolveMapMarkerIcon(&q, buf, sizeof(buf), &need);
         if (r == PNGII::API::Result::kNotReady) return false;
         if (r == PNGII::API::Result::kSuccess && buf[0]) ToDataPath(buf, a_out);
+        return true;
+    }
+
+    std::uint32_t ColorGeneration() {
+        std::uint32_t gen = 0;
+        if (g_colorApi) g_colorApi->getColorGeneration(&gen);
+        return gen;
+}
+
+    bool ResolveRefColor(std::uint32_t a_formID, std::uint32_t a_locationID, std::uint16_t a_type,
+                         bool a_undiscovered, std::uint32_t& a_rgb) {
+        a_rgb = 0;
+        if (!g_colorApi) return true;
+        PNGII::API::MapMarkerQuery q{};
+        q.structSize = sizeof(q);
+        q.formID = a_formID;
+        q.locationFormID = a_locationID;
+        q.markerType = a_type;
+        q.undiscovered = a_undiscovered ? 1 : 0;
+        std::uint32_t rgb = 0;
+        const auto r = g_colorApi->resolveMapMarkerColor(&q, &rgb);
+        if (r == PNGII::API::Result::kNotReady) return false;
+        if (r == PNGII::API::Result::kSuccess) a_rgb = rgb | kHasColor;
         return true;
     }
 }

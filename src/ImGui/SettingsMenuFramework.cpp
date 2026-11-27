@@ -430,6 +430,12 @@ namespace SettingsMenuFramework {
         flowNext(LocalizationManager::Get("Settings.Border"));
         ColorEdit4(LocalizationManager::Get("Settings.Border").c_str(), settings->borderColorR, settings->borderColorG,
                    settings->borderColorB, settings->borderColorA);
+        flowNext(LocalizationManager::Get("Settings.HighlightColor"));
+        ColorEdit4(LocalizationManager::Get("Settings.HighlightColor").c_str(), settings->highlightColorR,
+                   settings->highlightColorG, settings->highlightColorB, settings->highlightColorA);
+        flowNext(LocalizationManager::Get("Settings.TabColor"));
+        ColorEdit4(LocalizationManager::Get("Settings.TabColor").c_str(), settings->tabColorR, settings->tabColorG,
+                   settings->tabColorB, settings->tabColorA);
         if (ImGuiMCP::SliderInt(LocalizationManager::Get("Settings.InterfaceScale").c_str(), &settings->interfaceScale, 50, 200, "%d%%")) {
         }
         if (ImGuiMCP::IsItemDeactivatedAfterEdit()) {
@@ -628,6 +634,7 @@ namespace SettingsMenuFramework {
             ImGuiMCP::BeginDisabled(!settings->navRimMarkersEnabled);
             ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.HideMapMarkersInCombat").c_str(), &settings->navRimMarkersHideInCombat);
             ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.RimShowUndiscovered").c_str(), &settings->navRimShowUndiscovered);
+            ImGuiMCP::Checkbox(LocalizationManager::Get("Settings.RimPngiiColors").c_str(), &settings->navRimPngiiColors);
             {
                 float rangeMeters = settings->navRimMarkerRange / Settings::kUnitsPerMeter;
                 if (ImGuiMCP::SliderFloat((LocalizationManager::Get("Settings.ShowMarkersWithin") + "##rim").c_str(), &rangeMeters, 50.0f, 2000.0f, "%.0f m")) {

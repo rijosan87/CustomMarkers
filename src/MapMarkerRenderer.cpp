@@ -10,6 +10,7 @@
 #include "LocalMapClickHook.h"
 #include "FontManager.h"
 #include "BackgroundManager.h"
+#include "MarkerHoverHook.h"
 #include "LocalizationManager.h"
 #include "MapStats.h"
 #include "QuestTracker.h"
@@ -784,7 +785,7 @@ void MapMarkerRenderer::Draw() {
                 break;
             }
         }
-        if (!active) {
+        if (!active && !MarkerHoverHook::IsCursorSweeping()) {
             for (const auto& v : visible) {
                 if (MapDraw::PointInRect(mouse, MapDraw::PinBox(v.px, v.py, geometryScale))) { active = &v; break; }
             }
@@ -1120,55 +1121,7 @@ void MapMarkerRenderer::Draw() {
     _removeButtonTarget.store(0);
     _destButtonTarget.store(0);
     _editButtonTarget.store(0);
-
-    // Custom marker list panel (default hotkey C).
-    if (_showListPanel.load()) {
         DrawListPanel();
-    } else {
-        {
-            std::lock_guard<std::mutex> lk(_panelMutex);
-            _panelVisible = false;
-            _rowIds.clear();
-            _rowDeleteRects.clear();
-            _pendingControllerTab.store(-1);
-        }
-        // These earlier returns already exclude fades, modals, SMF, and the
-        // local map. The reminder is for the player's saved hidden choice.
-        auto* hintSettings = Settings::GetSingleton();
-        if (!SettingsMenu::IsVisible() && !_noteDialogOpen && hintSettings->listPanelKey > 0) {
-            const std::string bind = InputHandler::FormatHotkeyWithModifier(
-                hintSettings->listPanelKey, hintSettings->listPanelModifier);
-            std::string label = LocalizationManager::Get("ListPanel.Hint");
-            if (label == "ListPanel.Hint") label = "List Panel";
-
-            ImFont* font = ImGui::GetFont();
-            const float fs = ImGui::GetFontSize() * UIScale::Font();
-            const ImVec2 keySize = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, bind.c_str());
-            const ImVec2 labelSize = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, label.c_str());
-            const float padX = UIScale::Px(7.0f);
-            const float padY = UIScale::Px(4.0f);
-            const float gap = UIScale::Px(8.0f);
-            const float margin = UIScale::Px(20.0f);
-            const float keyW = keySize.x + padX * 2.0f;
-            const float hintW = keyW + gap + labelSize.x + padX;
-            const float hintH = std::max(keySize.y, labelSize.y) + padY * 2.0f;
-            const float x = dispSize.x - margin - hintW;
-            const float y = margin;
-            if (x >= margin && y + hintH < dispSize.y) {
-                const float rounding = UIScale::Px(2.0f);
-                dl->AddRectFilled(ImVec2(x, y), ImVec2(x + hintW, y + hintH),
-                                  MapDraw::WithAlpha(MapTheme::kPanelBg, 0.80f), rounding);
-                dl->AddRectFilled(ImVec2(x, y), ImVec2(x + keyW, y + hintH),
-                                  MapTheme::kPanelBg, rounding);
-                dl->AddRect(ImVec2(x, y), ImVec2(x + keyW, y + hintH),
-                            MapTheme::kPanelBorder, rounding, 0, UIScale::Px(1.0f));
-                const float textY = std::floor(y + (hintH - fs) * 0.5f);
-                dl->AddText(font, fs, ImVec2(x + padX, textY), MapTheme::kBodyText, bind.c_str());
-                dl->AddText(font, fs, ImVec2(x + keyW + gap, textY),
-                            MapTheme::kBodyText, label.c_str());
-            }
-        }
-    }
 
     // Focus-mode filter rows (world map only).
     if (!isLocalMap && Settings::GetSingleton()->showFilterPanel) {
@@ -1353,7 +1306,9 @@ void MapMarkerRenderer::DrawListPanel() {
     const float pad       = UIScale::Px(10.0f);
     const float rowHeight = std::floor(bodyFS + UIScale::Px(11.0f));
     const float headerH   = std::floor(titleFS + UIScale::Px(12.0f));
-    const float gripH     = UIScale::Px(18.0f);
+    const bool  collapsed = !_showListPanel.load();
+    const float roseSz    = std::floor(titleFS * 1.25f);
+    const float titleRowH = std::floor((std::max)(titleFS, roseSz) + UIScale::Px(10.0f));
     const float bandLift  = UIScale::Px(3.0f);
     const auto RowTextY = [rowHeight, bandLift](float a_y, float a_fs) {
         return std::floor(a_y - bandLift + (rowHeight - a_fs) * 0.5f);
@@ -1388,16 +1343,16 @@ void MapMarkerRenderer::DrawListPanel() {
         std::string label = loc->GetLabel(a_key);
         return label == a_key ? std::string(a_fallback) : label;
     };
-    struct StatRow { const char* icon; std::string label; std::string value; };
+    struct StatRow { const char* icon; std::string label; std::string value; std::string total; };
     std::vector<StatRow> statRows;
     if (settings->listShowOverview) {
         statRows.reserve(4);
         statRows.push_back({ "dungeons", StatLabel("Overview.DungeonsLabel", "Dungeons"),
-                             std::format("{} / {}", mapStats.dungeonsCleared, mapStats.dungeonsTotal) });
+                             std::to_string(mapStats.dungeonsCleared), std::to_string(mapStats.dungeonsTotal) });
         statRows.push_back({ "locations", StatLabel("Overview.LocationsLabel", "Locations"),
-                             std::format("{} / {}", mapStats.locationsDiscovered, mapStats.locationsTotal) });
+                             std::to_string(mapStats.locationsDiscovered), std::to_string(mapStats.locationsTotal) });
         statRows.push_back({ "stones", StatLabel("Overview.StandingStonesLabel", "Standing Stones"),
-                             std::format("{} / {}", mapStats.stonesFound, mapStats.stonesTotal) });
+                             std::to_string(mapStats.stonesFound), std::to_string(mapStats.stonesTotal) });
         statRows.push_back({ "bounty", StatLabel("Overview.TotalBountyLabel", "Total Bounty"),
                              std::to_string(mapStats.totalBounty) });
     }
@@ -1486,7 +1441,7 @@ void MapMarkerRenderer::DrawListPanel() {
     }
     contentH += pad * 2.0f;
 
-    const float chromeH = gripH + tabStripH;
+    const float chromeH = titleRowH + tabStripH;
 
     const float maxH = dispSize.y *
         (std::clamp(settings->listPanelMaxHeightPct, 30, 95) / 100.0f);
@@ -1497,7 +1452,16 @@ void MapMarkerRenderer::DrawListPanel() {
     const float bodyMaxH = std::max(rowHeight * 3.0f, maxH - chromeH);
     const float bodyMinH = std::clamp(minH - chromeH, 0.0f, bodyMaxH);
     const float bodyH    = std::clamp(contentH, bodyMinH, bodyMaxH);
-    const float panelH   = chromeH + bodyH;
+
+    {
+        const float target = collapsed ? 0.0f : 1.0f;
+        if (_listOpenAnim < 0.0f) _listOpenAnim = target;
+        const float dt = std::min(ImGui::GetIO().DeltaTime, 0.1f);
+        _listOpenAnim = target + (_listOpenAnim - target) * std::pow(0.0005f, dt);
+        if (std::abs(_listOpenAnim - target) < 0.001f) _listOpenAnim = target;
+    }
+    const float openEased = 1.0f - (1.0f - _listOpenAnim) * (1.0f - _listOpenAnim);
+    const float panelH    = std::floor(titleRowH + (tabStripH + bodyH) * openEased);
 
     // Engine menu cursor. Needed before positioning so the header-strip drag
     // can read it. Same projection used below for row hover hit-testing.
@@ -1548,7 +1512,7 @@ void MapMarkerRenderer::DrawListPanel() {
     }
     scrollY = std::clamp(scrollY, 0.0f, _listScrollMax);
 
-    const float headerStripBottom = mn.y + gripH;
+    const float headerStripBottom = mn.y + titleRowH;
     const bool  leftDown = (mouse.x >= 0.0f) &&
                            (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
     const bool  leftPressed = (mouse.x >= 0.0f) && leftDown && !_panelPrevLeftDown;
@@ -1557,13 +1521,26 @@ void MapMarkerRenderer::DrawListPanel() {
         mouse.x >= mn.x && mouse.x <= mx.x &&
         mouse.y >= mn.y && mouse.y <= headerStripBottom;
 
+    if (overHeader) MapDraw::MarkCursorHot();
+
     if (!_draggingPanel && leftPressed && overHeader) {
         _draggingPanel = true;
         _panelGrabDX = mouse.x - mn.x;
         _panelGrabDY = mouse.y - mn.y;
+        _panelPressX = mouse.x;
+        _panelPressY = mouse.y;
+        _panelDragMoved = false;
     }
     if (_draggingPanel) {
-        if (leftDown) {
+        constexpr float kClickSlopPx = 4.0f;
+        const float pressDX = mouse.x - _panelPressX;
+        const float pressDY = mouse.y - _panelPressY;
+        if (pressDX * pressDX + pressDY * pressDY > kClickSlopPx * kClickSlopPx) _panelDragMoved = true;
+        if (!leftDown && !_panelDragMoved) {
+            _draggingPanel = false;
+            ToggleListPanel();
+        } else if (leftDown && !_panelDragMoved) {
+        } else if (leftDown) {
             settings->listPanelPosX = static_cast<std::int32_t>(mouse.x - _panelGrabDX);
             settings->listPanelPosY = static_cast<std::int32_t>(mouse.y - _panelGrabDY);
             mn.x = static_cast<float>(settings->listPanelPosX);
@@ -1588,38 +1565,72 @@ void MapMarkerRenderer::DrawListPanel() {
     const ImVec2 bgMin(mn.x - bgBleed, mn.y - bgBleed);
     const ImVec2 bgMax(mx.x + bgBleed, mx.y + bgBleed);
 
-    if (panelBg) {
+    {
+        const float artAlpha  = panelBg ? openEased : 0.0f;
+        const float cardAlpha = 1.0f - artAlpha;
+        if (cardAlpha > 0.0f) {
+            MapDraw::DrawPanelCard(dl, bgMin, bgMax,
+                                   MapDraw::WithAlpha(settings->BgCol(), cardAlpha),
+                                   MapDraw::WithAlpha(settings->BorderCol(), cardAlpha),
+                                   1.0f, geometryScale);
+        }
+        if (artAlpha > 0.0f) {
         // Stretched to that rect, which grows with the marker count, so art
         // should be authored tall (portrait) rather than square.
         dl->AddImageRounded(reinterpret_cast<ImTextureID>(panelBg), bgMin, bgMax,
                             ImVec2(0, 0), ImVec2(1, 1),
-                            IM_COL32_WHITE, MapTheme::kPanelRounding);
-    } else {
-        // Unified panel background + border (Settings > Appearance).
-        MapDraw::DrawPanelCard(dl, bgMin, bgMax, settings->BgCol(), settings->BorderCol(),
-                               1.0f, geometryScale);
+                                IM_COL32(255, 255, 255, static_cast<int>(255 * artAlpha)),
+                                MapTheme::kPanelRounding);
+        }
     }
 
     {
-        const float dotBandH = UIScale::Px(12.0f);
-        const float gripMidY = mn.y + std::floor(dotBandH * 0.5f);
-        const float gripX0   = mn.x + pad;
-        const float gripX1   = mx.x - pad;
-        const ImU32 gripCol  = _draggingPanel ? settings->TitleCol() : MapTheme::kSeparator;
+        const bool  lit  = overHeader || _draggingPanel;
+        const ImU32 gold = lit ? settings->BodyColHover() : settings->TitleCol();
+        if (lit) {
+            MapDraw::DrawSoftStrip(dl, mn, ImVec2(mx.x, headerStripBottom), settings->HighlightCol());
+        }
 
-        const float dotSz   = (std::max)(1.0f, std::round(UIScale::Px(1.0f))); // square dot
-        const float dotStep = UIScale::Px(4.0f);   // dot pitch along the row
-        const float rowGap  = UIScale::Px(4.0f);   // vertical gap between the two rows
-        for (int r = 0; r < 2; ++r) {
-            const float ly = std::floor(gripMidY + (static_cast<float>(r) - 0.5f) * rowGap);
-            // Offset every other row by half a step so the two read as a
-            // texture rather than a grid.
-            const float x0 = gripX0 + static_cast<float>(r) * dotStep * 0.5f;
-            for (float x = x0; x <= gripX1 - dotSz; x += dotStep) {
-                dl->AddRectFilled(ImVec2(x, ly), ImVec2(x + dotSz, ly + dotSz), gripCol);
+        std::string title = LocalizationManager::Get("ListPanel.Hint");
+        if (title == "ListPanel.Hint") title = "List Panel";
+        MapDraw::DrawTextShadowed(dl, titleFont, titleFS,
+                                  ImVec2(mn.x + pad, std::floor(mn.y + (titleRowH - titleFS) * 0.5f)),
+                                  gold, title.c_str());
+
+        const float  roseR = roseSz * 0.5f;
+        const ImVec2 roseC(mx.x - pad - roseR, mn.y + titleRowH * 0.5f);
+        MapDraw::DrawChevronHandle(dl, roseC, roseSz, IM_PI * (0.5f - openEased), gold);
+
+        if (settings->listPanelKey > 0) {
+            const std::string bind = InputHandler::FormatHotkeyWithModifier(
+                settings->listPanelKey, settings->listPanelModifier);
+            const float  keyFS   = std::floor(bodyFS * 0.7f);
+            const ImVec2 keySize = defaultFont->CalcTextSizeA(keyFS, FLT_MAX, 0.0f, bind.c_str());
+            const float  kPad    = UIScale::Px(2.0f);
+            const ImVec2 kMax(roseC.x + roseR + kPad * 2.0f, roseC.y + roseR + kPad);
+            const ImVec2 kMin(kMax.x - keySize.x - kPad * 2.0f, kMax.y - keySize.y - kPad);
+            dl->AddRectFilled(kMin, kMax, IM_COL32(16, 14, 11, 235), UIScale::Px(2.0f));
+            dl->AddRect(kMin, kMax, MapDraw::WithAlpha(settings->TitleCol(), 0.55f), UIScale::Px(2.0f));
+            dl->AddText(defaultFont, keyFS, ImVec2(kMin.x + kPad, kMin.y + kPad * 0.5f),
+                        settings->BodyCol(), bind.c_str());
             }
         }
+
+    if (openEased <= 0.0f) {
+        std::lock_guard<std::mutex> lk(_panelMutex);
+        _panelVisible = true;
+        _panelMinX = mn.x; _panelMinY = mn.y;
+        _panelMaxX = mx.x; _panelMaxY = mx.y;
+        _controllerTabStrip = {};
+        _rowIds.clear();       _rowRects.clear();       _rowDeleteRects.clear();
+        _rowFavIds.clear();    _rowFavRects.clear();    _rowFavDeleteRects.clear();
+        _rowNoteIds.clear();   _rowNoteRects.clear();   _rowNoteDeleteRects.clear();
+        _rowQuestIds.clear();  _rowQuestRects.clear();  _rowQuestPositions.clear();
+        _destRowValid = false;
+        _pendingControllerTab.store(-1);
+        return;
     }
+    dl->PushClipRect(mn, mx, true);
 
     const float rowPadX = UIScale::Px(1.0f);
     const float rowsLeft  = mn.x + rowPadX;
@@ -1632,13 +1643,16 @@ void MapMarkerRenderer::DrawListPanel() {
     const float listPngIconSz = std::floor(logicalBodyFS * 1.35f * geometryScale);
     const float listIconGap = std::floor(bodyFS * 0.55f);
 
-    const float tabTop    = mn.y + gripH;
+    const float tabTop    = mn.y + titleRowH;
     const float tabBottom = tabTop + tabStripH;
     const float tabW      = (mx.x - mn.x) / static_cast<float>(tabs.size());
 
     dl->AddRectFilled(ImVec2(mn.x + rowPadX, tabTop),
                       ImVec2(mx.x - rowPadX, tabBottom),
                       MapTheme::kTabTrayBg);
+
+    constexpr float kTabHoverShade   = 0.45f;
+    constexpr float kTabDividerShade = 0.78f;
 
     for (std::size_t i = 0; i < tabs.size(); ++i) {
         const float tx0 = mn.x + tabW * static_cast<float>(i);
@@ -1647,6 +1661,7 @@ void MapMarkerRenderer::DrawListPanel() {
         const bool  isActive  = (tabs[i].tab == activeTab);
         const bool  tabHover  = mouse.x >= tx0 && mouse.x <= tx1 &&
                                 mouse.y >= tabTop && mouse.y <= tabBottom;
+        if (tabHover) MapDraw::MarkCursorHot();
 
         // Drag suppresses the switch: the title strip above starts the drag and
         // the cursor can slide onto the strip mid-drag.
@@ -1657,7 +1672,7 @@ void MapMarkerRenderer::DrawListPanel() {
 
         if (isActive) {
             dl->AddRectFilled(ImVec2(tx0, tabTop), ImVec2(tx1, tabBottom),
-                              MapTheme::kTabActiveBg);
+                              settings->TabCol());
             dl->AddLine(ImVec2(tx0 + UIScale::Px(4.0f), tabBottom - UIScale::Px(1.0f)),
                         ImVec2(tx1 - UIScale::Px(4.0f), tabBottom - UIScale::Px(1.0f)),
                         settings->TitleCol(), UIScale::Px(2.0f));
@@ -1665,7 +1680,7 @@ void MapMarkerRenderer::DrawListPanel() {
             // Deliberately weaker than kTabActiveBg. Both used kRowHoverBg
             // before, so hovering an inactive tab looked like selecting it.
             dl->AddRectFilled(ImVec2(tx0, tabTop), ImVec2(tx1, tabBottom),
-                              MapTheme::kTabHoverBg);
+                              MapDraw::WithAlpha(settings->TabCol(), kTabHoverShade));
         }
 
         std::string label = tabs[i].label;
@@ -1689,7 +1704,7 @@ void MapMarkerRenderer::DrawListPanel() {
     for (std::size_t i = 1; i < tabs.size(); ++i) {
         const float dx = mn.x + tabW * static_cast<float>(i);
         dl->AddLine(ImVec2(dx, tabTop + UIScale::Px(3.0f)), ImVec2(dx, tabBottom - UIScale::Px(3.0f)),
-                    MapTheme::kTabDivider, UIScale::Px(1.0f));
+                    MapDraw::WithAlpha(settings->TabCol(), kTabDividerShade), UIScale::Px(1.0f));
     }
 
     const float rowContentRight = mx.x - rowTextInset;
@@ -1812,6 +1827,14 @@ void MapMarkerRenderer::DrawListPanel() {
     float y = bodyMin.y + pad - scrollY;
 
     if (activeTab == ListTab::Overview && settings->listShowOverview) {
+        const float statTextScale = bodyFS / baseFS;
+        float totalColW = 0.0f;
+        for (const auto& row : statRows) {
+            totalColW = (std::max)(totalColW, ImGui::CalcTextSize(row.total.c_str()).x * statTextScale);
+        }
+        const std::string slashText = " / ";
+        const float slashW = ImGui::CalcTextSize(slashText.c_str()).x * statTextScale;
+        const float slashX = rowContentRight - totalColW - slashW;
         // Keep the same text column as Destination, but let the artwork fill
         // more of its row. The 256px PNGs still contain transparent margins.
         for (const auto& row : statRows) {
@@ -1827,8 +1850,9 @@ void MapMarkerRenderer::DrawListPanel() {
                                         IM_COL32(210, 210, 210, 255));
                     textX += listIconSlot + listIconGap;
                 }
-                const float valueWidth = ImGui::CalcTextSize(row.value.c_str()).x * (bodyFS / baseFS);
-                const float valueX = rowContentRight - valueWidth;
+                const bool hasTotal = !row.total.empty();
+                const float valueWidth = ImGui::CalcTextSize(row.value.c_str()).x * statTextScale;
+                const float valueX = (hasTotal ? slashX : rowContentRight) - valueWidth;
                 const float labelRight = valueX - UIScale::Px(12.0f);
                 // Reserve the value column even when a translation needs truncation.
                 if (labelRight > textX) {
@@ -1842,6 +1866,14 @@ void MapMarkerRenderer::DrawListPanel() {
                 MapDraw::DrawTextShadowed(dl, ImGui::GetFont(), bodyFS,
                             ImVec2(valueX, RowTextY(y, bodyFS)),
                             settings->BodyCol(), row.value.c_str());
+                if (hasTotal) {
+                    MapDraw::DrawTextShadowed(dl, ImGui::GetFont(), bodyFS,
+                                ImVec2(slashX, RowTextY(y, bodyFS)),
+                                settings->BodyCol(), slashText.c_str());
+                    MapDraw::DrawTextShadowed(dl, ImGui::GetFont(), bodyFS,
+                                ImVec2(slashX + slashW, RowTextY(y, bodyFS)),
+                                settings->BodyCol(), row.total.c_str());
+                }
                 DrawFadingUnderline(textX, rowContentRight, y + rowHeight - bandLift,
                                     kStatUnderlineAlpha);
             }
@@ -1877,9 +1909,10 @@ void MapMarkerRenderer::DrawListPanel() {
                 if (rowVisible) {
                     const bool rowHovered = canPan && cursorInRowsX &&
                                             mouse.y >= bandTop && mouse.y <= bandBottom;
+                    if (rowHovered) MapDraw::MarkCursorHot();
                     if (rowHovered) {
                         dl->AddRectFilled(ImVec2(rowsLeft, bandTop), ImVec2(rowsRight, bandBottom),
-                                          MapTheme::kRowHoverBg, UIScale::Px(2.0f));
+                                          settings->HighlightCol(), UIScale::Px(2.0f));
                     }
 
                     float textX = rowContentX;
@@ -1945,6 +1978,7 @@ void MapMarkerRenderer::DrawListPanel() {
                 // Blue-tinted background so destination is clearly identified, brighter on hover
                 const bool rowHovered = destRow.canPan && cursorInRowsX &&
                                         mouse.y >= bandTop && mouse.y <= bandBottom;
+                if (rowHovered) MapDraw::MarkCursorHot();
                 const ImU32 bgFill = rowHovered ? MapTheme::kDestRowBgHover : MapTheme::kDestRowBg;
                 dl->AddRectFilled(ImVec2(rowsLeft, bandTop),
                                   ImVec2(rowsRight, bandBottom),
@@ -2040,10 +2074,11 @@ void MapMarkerRenderer::DrawListPanel() {
                     if (rowVisible) {
                         const bool rowHovered = q.hasPosition && cursorInRowsX &&
                                                 mouse.y >= bandTop && mouse.y <= bandBottom;
+                        if (rowHovered) MapDraw::MarkCursorHot();
                         if (rowHovered) {
                             dl->AddRectFilled(ImVec2(rowsLeft, bandTop),
                                               ImVec2(rowsRight, bandBottom),
-                                              MapTheme::kRowHoverBg, UIScale::Px(2.0f));
+                                              settings->HighlightCol(), UIScale::Px(2.0f));
                         }
 
                         const ImU32 textCol = rowHovered ? settings->BodyColHover() : settings->BodyCol();
@@ -2150,6 +2185,7 @@ void MapMarkerRenderer::DrawListPanel() {
                 const bool  rowVisible = (bandBottom > rowsTop) && (bandTop < mx.y);
                 if (rowVisible) {
                     const bool  rowHovered = cursorInRowsX && mouse.y >= bandTop && mouse.y <= bandBottom;
+                    if (rowHovered) MapDraw::MarkCursorHot();
                     const float delY0      = bandTop + delBtnPadY;
                     const float delY1      = bandBottom - delBtnPadY;
                     const bool  delHovered = rowHovered && mouse.x >= delBtnX0 && mouse.x <= delBtnX1;
@@ -2162,7 +2198,7 @@ void MapMarkerRenderer::DrawListPanel() {
                     } else if (rowHovered) {
                         dl->AddRectFilled(ImVec2(rowsLeft, bandTop),
                                           ImVec2(rowsRight, bandBottom),
-                                          MapTheme::kRowHoverBg, UIScale::Px(2.0f));
+                                          settings->HighlightCol(), UIScale::Px(2.0f));
                     }
 
                     const ImU32 textCol = rowHovered ? settings->BodyColHover() : settings->BodyCol();
@@ -2246,6 +2282,7 @@ void MapMarkerRenderer::DrawListPanel() {
                 const bool  rowVisible = (bandBottom > rowsTop) && (bandTop < mx.y);
                 if (rowVisible) {
                     const bool  rowHovered = cursorInRowsX && mouse.y >= bandTop && mouse.y <= bandBottom;
+                    if (rowHovered) MapDraw::MarkCursorHot();
                     const float delY0      = bandTop + delBtnPadY;
                     const float delY1      = bandBottom - delBtnPadY;
                     const bool  delHovered = rowHovered && mouse.x >= delBtnX0 && mouse.x <= delBtnX1;
@@ -2253,7 +2290,7 @@ void MapMarkerRenderer::DrawListPanel() {
                     if (rowHovered) {
                         dl->AddRectFilled(ImVec2(rowsLeft, bandTop),
                                           ImVec2(rowsRight, bandBottom),
-                                          MapTheme::kRowHoverBg, UIScale::Px(2.0f));
+                                          settings->HighlightCol(), UIScale::Px(2.0f));
                     }
 
                     const ImU32 textCol = rowHovered ? settings->BodyColHover() : settings->BodyCol();
@@ -2313,6 +2350,7 @@ void MapMarkerRenderer::DrawListPanel() {
                 const bool  rowVisible = (bandBottom > rowsTop) && (bandTop < mx.y);
                 if (rowVisible) {
                     const bool  rowHovered = cursorInRowsX && mouse.y >= bandTop && mouse.y <= bandBottom;
+                    if (rowHovered) MapDraw::MarkCursorHot();
                     const float delY0      = bandTop + delBtnPadY;
                     const float delY1      = bandBottom - delBtnPadY;
                     const bool  delHovered = rowHovered && mouse.x >= delBtnX0 && mouse.x <= delBtnX1;
@@ -2320,7 +2358,7 @@ void MapMarkerRenderer::DrawListPanel() {
                     if (rowHovered) {
                         dl->AddRectFilled(ImVec2(rowsLeft, bandTop),
                                           ImVec2(rowsRight, bandBottom),
-                                          MapTheme::kRowHoverBg, UIScale::Px(2.0f));
+                                          settings->HighlightCol(), UIScale::Px(2.0f));
                     }
 
                     const ImU32 textCol = rowHovered ? settings->BodyColHover() : settings->BodyCol();
@@ -2375,6 +2413,8 @@ void MapMarkerRenderer::DrawListPanel() {
                           ImVec2(mx.x - sbMarginRight, thumbY + thumbH),
                           MapTheme::kSeparator, UIScale::Px(2.0f));
     }
+
+    dl->PopClipRect();
 
     std::lock_guard<std::mutex> lk(_panelMutex);
     _panelVisible = true;
@@ -2869,7 +2909,7 @@ void MapMarkerRenderer::DrawFilterPanel() {
     // Keep Separator's layout advance, but draw the header's fading line below.
     ImGui::PushStyleColor(ImGuiCol_Separator,     ImVec4(0, 0, 0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,    ImVec2(UIScale::Px(13.0f), UIScale::Px(8.0f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,    ImVec2(UIScale::Px(18.0f), UIScale::Px(18.0f)));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,      ImVec2(UIScale::Px(8.0f),  UIScale::Px(6.0f)));
     if (ImGui::Begin("Map Filters", nullptr,
                      ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing |
@@ -2884,14 +2924,6 @@ void MapMarkerRenderer::DrawFilterPanel() {
 
         const ImVec2 wPos  = ImGui::GetWindowPos();
         const ImVec2 wSize = ImGui::GetWindowSize();
-
-        if (wSize.x > 1.0f && wSize.y > 1.0f) {
-            ImDrawList* wdl = ImGui::GetWindowDrawList();
-            wdl->PushClipRectFullScreen();
-            MapDraw::DrawPanelCard(wdl, wPos, ImVec2(wPos.x + wSize.x, wPos.y + wSize.y),
-                                   settings->BgCol(), settings->BorderCol(), 1.0f, geometryScale);
-            wdl->PopClipRect();
-        }
 
         {
             const float target    = settings->filterCollapsed ? 0.0f : 1.0f;
@@ -2911,6 +2943,34 @@ void MapMarkerRenderer::DrawFilterPanel() {
         }
         // Keep the state linear, ease only at draw time (quadratic ease-out).
         const float easedOpen = 1.0f - (1.0f - _filterAnim) * (1.0f - _filterAnim);
+
+        if (wSize.x > 1.0f && wSize.y > 1.0f) {
+            ImDrawList* wdl = ImGui::GetWindowDrawList();
+            wdl->PushClipRectFullScreen();
+            ID3D11ShaderResourceView* legendBg = nullptr;
+            if (settings->listPanelUseCustomBg) {
+                legendBg = BackgroundManager::GetBackground(BackgroundManager::Type::ListPanel,
+                                                            settings->listPanelBgIndex);
+            }
+            const ImVec2 wMax(wPos.x + wSize.x, wPos.y + wSize.y);
+            const float  artAlpha  = legendBg ? easedOpen : 0.0f;
+            const float  cardAlpha = 1.0f - artAlpha;
+            const auto   Fade = [](ImU32 a_col, float a_f) {
+                const auto alpha = static_cast<ImU32>(((a_col >> IM_COL32_A_SHIFT) & 0xFF) * a_f);
+                return (a_col & ~IM_COL32_A_MASK) | (alpha << IM_COL32_A_SHIFT);
+            };
+            if (cardAlpha > 0.0f) {
+                MapDraw::DrawPanelCard(wdl, wPos, wMax, Fade(settings->BgCol(), cardAlpha),
+                                       Fade(settings->BorderCol(), cardAlpha), 1.0f, geometryScale);
+            }
+            if (artAlpha > 0.0f) {
+                wdl->AddImageRounded(reinterpret_cast<ImTextureID>(legendBg), wPos, wMax,
+                                     ImVec2(0, 0), ImVec2(1, 1),
+                                     IM_COL32(255, 255, 255, static_cast<int>(255 * artAlpha)),
+                                     MapTheme::kPanelRounding);
+            }
+            wdl->PopClipRect();
+        }
 
         ImDrawList* hdrDl = ImGui::GetWindowDrawList();
 
@@ -3002,42 +3062,40 @@ void MapMarkerRenderer::DrawFilterPanel() {
             const float bxCollapsed = hMin.x + (iconSz - btnSz) * 0.5f;
             const float bx = bxCollapsed + (bxExpanded - bxCollapsed) * easedOpen;
             const float by = hMin.y + (hH - btnSz) * 0.5f;
-            collapseRect = { bx, by, bx + btnSz, by + btnSz };
+            const float  hdrPad = UIScale::Px(4.0f);
+            const ImVec2 hdrMin(hMin.x - hdrPad, hMin.y - hdrPad);
+            const ImVec2 hdrMax(hMin.x + rowW + hdrPad, hMin.y + hH + hdrPad);
+            collapseRect = { hdrMin.x, hdrMin.y, hdrMax.x, hdrMax.y };
 
-            ImGui::PushID("filterCollapse");
-            ImGui::SetCursorScreenPos(ImVec2(bx, by));
-            const bool btnClicked = ImGui::InvisibleButton("##collapse", ImVec2(btnSz, btnSz));
-            const bool btnHover   = ImGui::IsItemHovered();
-            ImGui::PopID();
+            const bool btnHover = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(hdrMin, hdrMax, false);
+            if (btnHover) MapDraw::MarkCursorHot();
+
+            constexpr float kClickSlopPx = 4.0f;
+            bool btnClicked = false;
+            if (btnHover && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                _filterHeaderPressed  = true;
+                _filterHeaderPressX = ImGui::GetIO().MousePos.x;
+                _filterHeaderPressY = ImGui::GetIO().MousePos.y;
+            }
+            if (_filterHeaderPressed && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                const ImVec2 now = ImGui::GetIO().MousePos;
+                const float  dx  = now.x - _filterHeaderPressX;
+                const float  dy  = now.y - _filterHeaderPressY;
+                btnClicked = dx * dx + dy * dy <= kClickSlopPx * kClickSlopPx;
+                _filterHeaderPressed = false;
+            }
 
             if (btnClicked || controllerAction == -2) {
                 settings->filterCollapsed = !settings->filterCollapsed;
                 settings->SavePositions();
             }
-
-            const float btnHoverPad = UIScale::Px(3.0f);
-            const float btnHoverRounding = UIScale::Px(3.0f);
             if (btnHover) {
-                hdrDl->AddRectFilled(ImVec2(bx - btnHoverPad, by - btnHoverPad),
-                                     ImVec2(bx + btnSz + btnHoverPad, by + btnSz + btnHoverPad),
-                                     MapTheme::kRowHoverBg, btnHoverRounding);
+                MapDraw::DrawSoftStrip(hdrDl, hdrMin, hdrMax, settings->HighlightCol());
             }
 
-            {
-                const float cx   = bx + btnSz * 0.5f;
-                const float cy   = by + btnSz * 0.5f;
-                const float armX = btnSz * 0.30f;
-                const float armY = btnSz * 0.34f;
-                // easedOpen 1 = expanded = tip on the left.
-                const float tipX = cx + armX * (1.0f - 2.0f * easedOpen);
-                const float bkX  = cx - armX * (1.0f - 2.0f * easedOpen);
-                const ImU32 chevCol = btnHover ? settings->BodyColHover() : settings->TitleCol();
-                const ImVec2 top(bkX, cy - armY);
-                const ImVec2 tip(tipX, cy);
-                const ImVec2 bottom(bkX, cy + armY);
-                hdrDl->AddTriangleFilled(top, tip, bottom, chevCol);
-                hdrDl->AddTriangle(top, tip, bottom, IM_COL32(0, 0, 0, 255), UIScale::Px(1.5f));
-            }
+            MapDraw::DrawChevronHandle(hdrDl, ImVec2(bx + btnSz * 0.5f, by + btnSz * 0.5f), btnSz,
+                                       IM_PI * easedOpen,
+                                       btnHover ? settings->BodyColHover() : settings->TitleCol());
 
             // Title: fades out as it collapses. Skipped entirely below ~2%
             // alpha so a fully collapsed strip does no text work at all.
@@ -3090,7 +3148,7 @@ void MapMarkerRenderer::DrawFilterPanel() {
             if (hovered) {
                 dl->AddRectFilled(ImVec2(rowMin.x - hoverPadX, rowMin.y),
                                   ImVec2(rowMin.x + rowW + hoverPadX, rowMin.y + rowH),
-                                  MapTheme::kRowHoverBg, hoverRounding);
+                                  settings->HighlightCol(), hoverRounding);
                 if (easedOpen <= 0.02f) {
                     tipText   = labels[i];
                     tipAnchor = ImVec2(rowMin.x + rowW + tipOffset, rowMin.y);
@@ -3147,7 +3205,7 @@ void MapMarkerRenderer::DrawFilterPanel() {
             if (setHovered) {
                 dl->AddRectFilled(ImVec2(setMin.x - hoverPadX, setMin.y),
                                   ImVec2(setMin.x + rowW + hoverPadX, setMin.y + rowH),
-                                  MapTheme::kRowHoverBg, hoverRounding);
+                                  settings->HighlightCol(), hoverRounding);
             }
 
             // Full tint always: unlike a category row this has no on/off state

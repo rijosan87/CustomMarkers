@@ -16,6 +16,7 @@ namespace RimMarkerSource {
         bool undiscovered = false;
         bool dimmed = false;
         std::string packPath;
+        std::uint32_t pngiiColor = 0;
         RE::FormID formID = 0;
         std::string name;
         std::string logLabel;

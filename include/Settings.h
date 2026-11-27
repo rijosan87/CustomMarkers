@@ -109,6 +109,12 @@ public:
 
     std::int32_t borderColorR = 140, borderColorG = 115, borderColorB = 65, borderColorA = 255;
 
+    std::int32_t highlightColorR = 140, highlightColorG = 115, highlightColorB = 65, highlightColorA = 55;
+    std::int32_t tabColorR = 140, tabColorG = 115, tabColorB = 65, tabColorA = 90;
+
+    ImU32 HighlightCol() const { return IM_COL32(highlightColorR, highlightColorG, highlightColorB, highlightColorA); }
+    ImU32 TabCol()       const { return IM_COL32(tabColorR, tabColorG, tabColorB, tabColorA); }
+
     ImU32 BgCol()        const { return IM_COL32(bgColorR, bgColorG, bgColorB, bgColorA); }
     ImVec4 BgColVec4()   const { return ImVec4(bgColorR / 255.0f, bgColorG / 255.0f,
                                                bgColorB / 255.0f, bgColorA / 255.0f); }
@@ -397,6 +403,7 @@ public:
     float navRimMarkerRange = 21000.0f;
     std::int32_t navMaxRimMarkers = 15;
     bool navRimShowUndiscovered = false;
+    bool navRimPngiiColors = true;
     bool navRimMode[11] = { true, true, true, true, true, true, true, true, false, false, true };
 
     bool         navBeaconVisible = true;
